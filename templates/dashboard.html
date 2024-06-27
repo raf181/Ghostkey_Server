@@ -1,0 +1,43 @@
+<!-- templates/dashboard.html -->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard</title>
+</head>
+<body>
+    <h1>Dashboard</h1>
+    <h2>Devices Linked to Your Account</h2>
+
+    <ul>
+        {% for device in devices %}
+            <li>
+                Device ID: {{ device.id }}<br>
+                Last Check-in: {{ device.last_check_in }}<br>
+                {% if device.pending_commands %}
+                    Pending Commands:
+                    <ul>
+                        {% for command in device.pending_commands %}
+                            <li>{{ command }}</li>
+                        {% endfor %}
+                    </ul>
+                {% else %}
+                    No pending commands.
+                {% endif %}
+                <form action="{{ url_for('blueprint_name.send_command') }}" method="post">
+                    <input type="hidden" name="device_id" value="{{ device.id }}">
+                    <label for="command">Send Command:</label>
+                    <input type="text" id="command" name="command">
+                    <button type="submit">Send</button>
+                </form>
+            </li>
+            <br>
+        {% endfor %}
+    </ul>
+
+    <!-- Add any additional content or features as needed -->
+
+</body>
+</html>

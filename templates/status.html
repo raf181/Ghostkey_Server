@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Device Status</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+        }
+        #command-form {
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Device Status</h1>
+    <ul id="device-list"></ul>
+
+    <h2>Send Command</h2>
+    <form id="command-form">
+        <label for="device-id">Device ID:</label>
+        <input type="text" id="device-id" name="device_id" required>
+        <label for="command">Command:</label>
+        <input type="text" id="command" name="command" required>
+        <button type="submit">Send Command</button>
+    </form>
+
+    <script>
+        fetch('/status')
+            .then(response => response.json())
+            .then(data => {
+                const deviceList = document.getElementById('device-list');
+                data.forEach(device => {
+                    const li = document.createElement('li');
+                    li.textContent = Device ID: ${device.device_id}, Last Seen: ${device.last_seen}, User: ${device.user};
+                    deviceList.appendChild(li);
+                });
+            });
+
+        document.getElementById('command-form').addEventListener('submit', function(event) {
+            event.preventDefault();
+            const formData = new FormData(event.target);
+            const data = Object.fromEntries(formData.entries());
+
+            fetch('/send_command', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(data)
+            })
+            .then(response => response.json())
+            .then(data => {
+                alert(data.message);
+            });
+        });
+    </script>
+</body>
+</html>
