@@ -2,8 +2,10 @@
 from flask import Flask
 from routes import register_routes
 from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager
 
 app = Flask(__name__)
+app.config['SECRET_KEY'] = 'your_secret_key'  # Required for session management
 
 # Database configuration
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
