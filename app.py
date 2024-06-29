@@ -1,40 +1,39 @@
-from flask import Flask
+from flask import Flask, request, jsonify
+from routes import register_routes
 from flask_sqlalchemy import SQLAlchemy
-from flask_login import LoginManager
-from flask_migrate import Migrate
-from routes import blueprint_name
-from models import db, User
+import logging
+from logging.handlers import RotatingFileHandler
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'your_secret_key'  # Replace with a strong secret key
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///c2_framework.db'
-app.config['SQLALCHEMY_BINDS'] = {
-    'backup':'sqlite:///c2_framework_backup.db',
-    'backup2':'sqlite:///c2_framework_backup2.db',
-    'backup3':'sqlite:///c2_framework_backup3.db'
-}
+
+# Configure logging
+handler = RotatingFileHandler('app.log', maxBytes=10000, backupCount=1)
+handler.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+app.logger.addHandler(handler)
+
+# Debugging statement
+app.logger.info('Logging initialized')
+
+# Database configuration
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# Initialize db with the app
-db.init_app(app)
+db = SQLAlchemy(app)
 
-# Migrate for database schema changes
-migrate = Migrate(app, db)
+# Register routes
+register_routes(app, db)
 
-# Create all tables based on your models
-with app.app_context():
-    db.create_all()
-
-login_manager = LoginManager()
-login_manager.init_app(app)
-login_manager.login_view = 'blueprint_name.login'
-
-@login_manager.user_loader
-def load_user(user_id):
-    return User.query.get(int(user_id))
-
-# Register blueprint
-app.register_blueprint(blueprint_name)
+# Log requests from ESP32 devices
+@app.before_request
+def log_request_info():
+    if request.path == '/command':
+        esp_id = request.json.get('esp_id') if request.json else None
+        command = request.json.get('command') if request.json else None
+        app.logger.info('ESP32 Request - esp_id: %s, command: %s', esp_id, command)
 
 if __name__ == '__main__':
-    app.run(host="0.0.0.0")
+    with app.app_context():
+        db.create_all()  # Create database tables if they do not exist
+    app.run(host='0.0.0.0', port=5000)
