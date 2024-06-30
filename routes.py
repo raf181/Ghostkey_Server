@@ -1,14 +1,17 @@
-# routes.py
-from flask import request, jsonify
+from flask import request, jsonify, current_app
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
+import logging
 
 def register_routes(app, db):
     # Initialize Flask-Login
     login_manager = LoginManager()
     login_manager.init_app(app)
     login_manager.login_view = 'login'
+
+    # Setup logging
+    logger = logging.getLogger(__name__)
 
     # Define the User model
     class User(UserMixin, db.Model):
@@ -21,42 +24,51 @@ def register_routes(app, db):
 
         def check_password(self, password):
             return check_password_hash(self.password_hash, password)
-        
+
     # Define the Command model
     class Command(db.Model):
         id = db.Column(db.Integer, primary_key=True)
         esp_id = db.Column(db.String(80), nullable=False)
         command = db.Column(db.String(120), nullable=False)
-        secret_key = db.Column(db.String(120), nullable=False)
+
+    # Define the ESPDevice model
+    class ESPDevice(db.Model):
+        id = db.Column(db.Integer, primary_key=True)
+        esp_id = db.Column(db.String(80), unique=True, nullable=False)
+        esp_secret_key = db.Column(db.String(120), nullable=False)
 
     @login_manager.user_loader
     def load_user(user_id):
         return User.query.get(int(user_id))
 
-
-
     @app.route('/register_user', methods=['POST'])
     def register_user():
-        username = request.json.get('username')
-        password = request.json.get('password')
-        if not username or not password:
-            return jsonify({'message': 'Username and password are required'}), 400
-        
+        data = request.get_json()
+        username = data.get('username')
+        password = data.get('password')
+        provided_secret_key = data.get('secret_key')
+
+        if not username or not password or not provided_secret_key:
+            return jsonify({'message': 'Username, password, and secret key are required'}), 400
+
+        if provided_secret_key != current_app.config['SECRET_KEY']:
+            return jsonify({'message': 'Invalid secret key'}), 403
+
         if User.query.filter_by(username=username).first():
             return jsonify({'message': 'Username already exists'}), 400
-        
+
         new_user = User(username=username)
         new_user.set_password(password)
         db.session.add(new_user)
         db.session.commit()
         return jsonify({'message': 'User registered successfully'})
 
-
-
     @app.route('/login', methods=['POST'])
     def login():
-        username = request.json.get('username')
-        password = request.json.get('password')
+        data = request.get_json()
+        username = data.get('username')
+        password = data.get('password')
+
         if not username or not password:
             return jsonify({'message': 'Username and password are required'}), 400
 
@@ -67,66 +79,68 @@ def register_routes(app, db):
         login_user(user)
         return jsonify({'message': 'Logged in successfully'})
 
-
-
     @app.route('/logout', methods=['POST'])
     @login_required
     def logout():
         logout_user()
         return jsonify({'message': 'Logged out successfully'})
 
-
-
-    @app.route('/register', methods=['POST'])
+    @app.route('/register_device', methods=['POST'])
     @login_required
-    def register():
-        esp_id = request.json.get('esp_id')
-        secret_key = request.json.get('secret_key')
+    def register_device():
+        data = request.get_json()
+        esp_id = data.get('esp_id')
+        esp_secret_key = data.get('esp_secret_key')
 
-        if not esp_id or not secret_key:
+        if not esp_id or not esp_secret_key:
             return jsonify({'message': 'ESP ID and secret key are required'}), 400
 
-        return jsonify({'message': 'ESP32 registered successfully', 'esp_id': esp_id, 'secret_key': secret_key})
+        if ESPDevice.query.filter_by(esp_id=esp_id).first():
+            return jsonify({'message': 'ESP ID already exists'}), 400
 
+        new_device = ESPDevice(esp_id=esp_id, esp_secret_key=generate_password_hash(esp_secret_key))
+        db.session.add(new_device)
+        db.session.commit()
 
+        return jsonify({'message': 'ESP32 registered successfully', 'esp_id': esp_id})
 
     @app.route('/command', methods=['POST'])
     @login_required
     def command():
-        esp_id = request.json.get('esp_id')
-        command_text = request.json.get('command')
-        secret_key = request.json.get('secret_key')
+        data = request.get_json()
+        esp_id = data.get('esp_id')
+        command_text = data.get('command')
 
-        if not esp_id or not command_text or not secret_key:
-            return jsonify({'message': 'ESP ID, command, and secret key are required'}), 400
+        if not esp_id or not command_text:
+            return jsonify({'message': 'ESP ID and command are required'}), 400
 
-        # Validate the ESP ID and secret key combination
-        command_exists = Command.query.filter_by(esp_id=esp_id, secret_key=secret_key).first()
-        if not command_exists:
-            return jsonify({'message': 'Invalid ESP ID or secret key'}), 400
+        device = ESPDevice.query.filter_by(esp_id=esp_id).first()
+        if not device:
+            return jsonify({'message': 'Invalid ESP ID'}), 400
 
-        new_command = Command(esp_id=esp_id, command=command_text, secret_key=secret_key)
+        new_command = Command(esp_id=esp_id, command=command_text)
         try:
             db.session.add(new_command)
             db.session.commit()
             return jsonify({'message': 'Command added successfully'})
         except Exception as e:
             db.session.rollback()
-            return jsonify({'message': f'An error occurred: {e}'}), 500
-
-
+            logger.error(f'Error adding command: {e}')
+            return jsonify({'message': 'An error occurred'}), 500
 
     @app.route('/get_command', methods=['GET'])
-    @login_required
     def get_command():
         esp_id = request.args.get('esp_id')
-        secret_key = request.args.get('secret_key')
+        esp_secret_key = request.args.get('esp_secret_key')
 
-        if not esp_id or not secret_key:
+        if not esp_id or not esp_secret_key:
             return jsonify({'message': 'ESP ID and secret key are required'}), 400
 
-        # Validate the ESP ID and secret key combination
-        command = Command.query.filter_by(esp_id=esp_id, secret_key=secret_key).order_by(Command.id).first()
+        device = ESPDevice.query.filter_by(esp_id=esp_id).first()
+        if not device or not check_password_hash(device.esp_secret_key, esp_secret_key):
+            return jsonify({'message': 'Invalid ESP ID or secret key'}), 400
+
+        command = Command.query.filter_by(esp_id=esp_id).order_by(Command.id).first()
         if command:
             try:
                 db.session.delete(command)
@@ -134,7 +148,7 @@ def register_routes(app, db):
                 return jsonify({'command': command.command})
             except Exception as e:
                 db.session.rollback()
-                return jsonify({'message': f'An error occurred: {e}'}), 500
+                logger.error(f'Error deleting command: {e}')
+                return jsonify({'message': 'An error occurred'}), 500
 
-        # If no command is found, return 'command: None'
         return jsonify({'command': None})
