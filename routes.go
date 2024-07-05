@@ -1,3 +1,5 @@
+// routes.go
+
 package main
 
 import (
@@ -22,7 +24,6 @@ func registerRoutes(r *gin.Engine) {
 }
 
 func registerUser(c *gin.Context) {
-    session := sessions.Default(c)
     secretKey := c.PostForm("secret_key")
     expectedSecretKey := os.Getenv("SECRET_KEY")
 
@@ -57,7 +58,6 @@ func registerUser(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"message": "User registered successfully"})
 }
-
 
 func login(c *gin.Context) {
     username := c.PostForm("username")
