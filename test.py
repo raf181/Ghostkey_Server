@@ -24,20 +24,27 @@ def fetch_command_from_api():
     try:
         response = requests.get(url, params=params)
         response.raise_for_status()
-        command_data = response.json()
-        command = command_data.get("command", "").strip()
-        if command:
-            print(f"Fetched command from API: {command}")
-            send_command_over_i2c(command)
+        
+        # Check if response contains JSON data
+        if response.headers.get('content-type') == 'application/json':
+            command_data = response.json()
+            command = command_data.get("command", "").strip()
+            if command:
+                print(f"Fetched command from API: {command}")
+                send_command_over_i2c(command)
+            else:
+                print("No command received from API")
         else:
-            print("No command received from API")
+            print(f"Unexpected response content: {response.content}")
+
     except requests.RequestException as e:
         print(f"Failed to connect to API: {e}")
 
-# Function to simulate sending command over I2C
-def send_command_over_i2c(command):
-    print(f"Sending command over I2C: {command}")
-    # Simulate I2C communication here
+    except json.JSONDecodeError as e:
+        print(f"Failed to decode JSON response: {e}")
+
+    except Exception as e:
+        print(f"Error: {e}")
 
 # Main loop to check for commands at intervals
 def main():
