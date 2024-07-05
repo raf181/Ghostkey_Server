@@ -29,7 +29,7 @@ curl -X POST http://localhost:5000/register_user -H "Content-Type: application/x
 To log in a user:
 
 ```sh
-curl -X POST http://localhost:5000/login -H "Content-Type: application/json" -d '{"username": "new_user", "password": "password123"}'
+curl -X POST http://localhost:5000/register_user -H "Content-Type: application/x-www-form-urlencoded" -d "username=new_user&password=password123"
 ```
 
 ### 3. Logout
@@ -37,7 +37,7 @@ curl -X POST http://localhost:5000/login -H "Content-Type: application/json" -d 
 To log out the current user:
 
 ```sh
-curl -X POST http://localhost:5000/logout -H "Content-Type: application/json"
+curl -X POST http://localhost:5000/logout -H "Content-Type: application/x-www-form-urlencoded"
 ```
 
 ### 4. Register ESP Device
@@ -45,7 +45,7 @@ curl -X POST http://localhost:5000/logout -H "Content-Type: application/json"
 To register a new ESP device, you need to be logged in:
 
 ```sh
-curl -X POST http://localhost:5000/register_device -H "Content-Type: application/json" -d '{"esp_id": "esp32_1", "esp_secret_key": "your_esp_secret_key"}'
+curl -X POST http://localhost:5000/register_device -H "Content-Type: application/x-www-form-urlencoded" -d "esp_id=esp32_1&esp_secret_key=your_esp_secret_key"
 ```
 
 ### 5. Send Command
@@ -53,7 +53,7 @@ curl -X POST http://localhost:5000/register_device -H "Content-Type: application
 To send a command to an ESP device, you need to be logged in:
 
 ```sh
-curl -X POST http://localhost:5000/command -H "Content-Type: application/json" -d '{"esp_id": "esp32_1", "command": "your_command_here"}'
+curl -X POST http://localhost:5000/command -H "Content-Type: application/x-www-form-urlencoded" -d "esp_id=esp32_1&command=your_command_here"
 ```
 
 ### 6. Get Command
@@ -61,7 +61,7 @@ curl -X POST http://localhost:5000/command -H "Content-Type: application/json" -
 To get a command for a specific ESP device, no login is required:
 
 ```sh
-curl -X GET http://localhost:5000/get_command -H "Content-Type: application/json" -d '{"esp_id": "esp32_1", "esp_secret_key": "esp_secret_key_123"}'
+curl -X GET http://localhost:5000/get_command -H "Content-Type: application/x-www-form-urlencoded" -d "esp_id=esp32_1&esp_secret_key=your_esp_secret_key"
 ```
 
 ### Notes
@@ -75,19 +75,19 @@ curl -X GET http://localhost:5000/get_command -H "Content-Type: application/json
 1. **Login and Save Session:**
 
 ```sh
-curl -c cookies.txt -X POST http://localhost:5000/login -H "Content-Type: application/json" -d '{"username":"new_user","password":"password123"}'
+curl -c cookies.txt -X POST http://localhost:5000/login -H "Content-Type: application/x-www-form-urlencoded" -d "username=new_user&password=password123"
 ```
 
 2. **Use Saved Session to Register Device:**
 
 ```sh
-curl -b cookies.txt -X POST http://localhost:5000/register_device -H "Content-Type: application/json" -d '{"esp_id":"esp32_1","esp_secret_key": "your_esp_secret_key"}'
+curl -b cookies.txt -X POST http://localhost:5000/register_device -H "Content-Type: application/x-www-form-urlencoded" -d "esp_id=esp32_1&esp_secret_key=your_esp_secret_key"
 ```
 
 3. **Use Saved Session to Send Command:**
 
 ```sh
-curl -b cookies.txt -X POST http://localhost:5000/command -H "Content-Type: application/json" -d '{"esp_id":"esp32_1","command":"your_command_here"}'
+curl -b cookies.txt -X POST http://localhost:5000/command -H "Content-Type: application/x-www-form-urlencoded" -d "esp_id=esp32_1&command=your_command_here"
 ```
 
 This approach ensures that the session information (cookies) is preserved between requests, simulating a logged-in state.
