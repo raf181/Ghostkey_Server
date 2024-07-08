@@ -20,7 +20,8 @@ func registerRoutes(r *gin.Engine) {
     r.GET("/get_command", getCommand)
     r.POST("/remove_command", removeCommand)
     r.GET("/get_all_commands", getAllCommands)
-    r.GET("/last_request_time", lastRequestTime)
+// [1]:Remuve r.GET("/last_request_time", lastRequestTime)
+    r.GET("/active_boards", getActiveBoards)// [1]:Remuve 
 }
 
 func registerUser(c *gin.Context) {
@@ -222,19 +223,50 @@ func getAllCommands(c *gin.Context) {
     c.JSON(http.StatusOK, gin.H{"commands": commandList})
 }
 
-func lastRequestTime(c *gin.Context) {
-    espID := c.Query("esp_id")
+// [1]:Remuve func lastRequestTime(c *gin.Context) {
+// [1]:Remuve     espID := c.Query("esp_id")
+// [1]:Remuve 
+// [1]:Remuve     if espID == "" {
+// [1]:Remuve         c.JSON(http.StatusBadRequest, gin.H{"message": "ESP ID is required"})
+// [1]:Remuve         return
+// [1]:Remuve     }
+// [1]:Remuve 
+// [1]:Remuve     var device ESPDevice
+// [1]:Remuve     if err := db.Where("esp_id = ?", espID).First(&device).Error; err != nil {
+// [1]:Remuve         c.JSON(http.StatusNotFound, gin.H{"message": "ESP ID not found"})
+// [1]:Remuve         return
+// [1]:Remuve     }
+// [1]:Remuve 
+// [1]:Remuve     c.JSON(http.StatusOK, gin.H{"last_request_time": device.LastRequestTime})
+// [1]:Remuve }
 
-    if espID == "" {
-        c.JSON(http.StatusBadRequest, gin.H{"message": "ESP ID is required"})
+func getActiveBoards(c *gin.Context) {
+    var devices []ESPDevice
+
+    // Get devices with a last request time within the last 2 minutes
+    XMinutesAgo := time.Now().UTC().Add(-2 * time.Minute)
+    if err := db.Where("last_request_time > ?", XMinutesAgo).Find(&devices).Error; err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to retrieve active boards"})
         return
     }
 
-    var device ESPDevice
-    if err := db.Where("esp_id = ?", espID).First(&device).Error; err != nil {
-        c.JSON(http.StatusNotFound, gin.H{"message": "ESP ID not found"})
-        return
+    activeBoards := make([]map[string]interface{}, len(devices))
+    for i, device := range devices {
+        // Check if device.LastRequestTime is not nil to avoid nil pointer dereference
+        if device.LastRequestTime != nil {
+            durationSinceLastRequest := time.Since(*device.LastRequestTime)
+            activeBoards[i] = map[string]interface{}{
+                "esp_id":                device.EspID,
+                "last_request_duration": durationSinceLastRequest.String(),
+            }
+        } else {
+            // Handle case where LastRequestTime is nil (no pending commands)
+            activeBoards[i] = map[string]interface{}{
+                "esp_id":                device.EspID,
+                "last_request_duration": "No commands since last request",
+            }
+        }
     }
 
-    c.JSON(http.StatusOK, gin.H{"last_request_time": device.LastRequestTime})
+    c.JSON(http.StatusOK, gin.H{"active_boards": activeBoards})
 }

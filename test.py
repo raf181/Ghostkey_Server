@@ -5,14 +5,14 @@ import time
 # Configuration
 ssid = "CASA-PONVI"  # Replace with your WiFi network name (SSID)
 password = "Famili@_9once_Vivanco$"  # Replace with your WiFi password
-api_host = "192.168.1.62"  # Replace with your API host address
+api_host = "192.168.10.62"  # Replace with your API host address
 api_port = 5000  # Replace with your API port
 api_endpoint = "/get_command"  # Replace with your API endpoint for fetching commands
 esp_id = "esp32_1"  # Replace with your ESP ID
 esp_secret_key = "your_esp_secret_key"  # Replace with your ESP Secret Key
 
 # Interval in seconds (e.g., 30 seconds)
-api_check_interval = 60
+api_check_interval = 30
 
 # Function to fetch command from API
 def fetch_command_from_api():
