@@ -156,28 +156,33 @@ func getCommand(c *gin.Context) {
         c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid ESP ID or secret key"})
         return
     }
-
-    var command Command
-    if err := db.Where("esp_id = ?", espID).Order("id").First(&command).Error; err != nil {
-        c.JSON(http.StatusOK, gin.H{"command": nil})
-        return
-    }
-
+    
     now := time.Now().UTC()
     device.LastRequestTime = &now
 
+    var command Command
+    err := db.Where("esp_id = ?", espID).Order("id").First(&command).Error
+    if err != nil {
+        // If no command found, create a preset command
+        presetCommand := "null"
+        command = Command{EspID: espID, Command: presetCommand}
+    } else {
+        // Delete the retrieved command from the database
+        if err := db.Delete(&command).Error; err != nil {
+            c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to delete command"})
+            return
+        }
+    }
+
+    // Save the updated LastRequestTime for the device
     if err := db.Save(&device).Error; err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to update device"})
         return
     }
 
-    if err := db.Delete(&command).Error; err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to delete command"})
-        return
-    }
-
     c.JSON(http.StatusOK, gin.H{"command": command.Command})
 }
+
 
 func removeCommand(c *gin.Context) {
     commandID := c.PostForm("command_id")
