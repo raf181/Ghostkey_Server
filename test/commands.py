@@ -5,7 +5,7 @@ import time
 import re
 
 # Configuration
-server_url = 'http://localhost:5000'
+server_url = 'http://192.168.10.62:5000'
 cookies_file = 'cookies.txt'  # Adjust path if necessary
 commands = [
     "command1",
@@ -93,8 +93,8 @@ def fetch_command_from_api(server_url, cookies_file, esp_id):
         # Check response
         if response.status_code == 200:
             command_data = response.json()
-            command = command_data.get('command', '')
-            return command
+            fetched_command = command_data.get('command', '')
+            return fetched_command
         else:
             print(f"Failed to fetch command for board '{esp_id}'")
             print(f"Status code: {response.status_code}")
@@ -112,18 +112,26 @@ def main():
         print("No registered boards found. Exiting.")
         return
 
+    command_verification_attempts = 3  # Number of times to verify each command
+
     while True:
         esp_id, sent_command = send_random_command(server_url, cookies_file, boards)
         
         if esp_id and sent_command:
-            time.sleep(random.uniform(1, 10))  # Random sleep interval between 1 to 10 seconds
-            
-            fetched_command = fetch_command_from_api(server_url, cookies_file, esp_id)
-            
-            if fetched_command == sent_command:
-                print(f"Command '{sent_command}' sent to board '{esp_id}' matches fetched command '{fetched_command}'. Verification successful.")
-            else:
-                print(f"Command '{sent_command}' sent to board '{esp_id}' does not match fetched command '{fetched_command}'. Verification failed.")
+            verification_success = False
+            for _ in range(command_verification_attempts):
+                time.sleep(random.uniform(1, 10))  # Random sleep interval between 1 to 10 seconds
+                fetched_command = fetch_command_from_api(server_url, cookies_file, esp_id)
+                
+                if fetched_command == sent_command:
+                    print(f"Command '{sent_command}' sent to board '{esp_id}' matches fetched command '{fetched_command}'. Verification successful.")
+                    verification_success = True
+                    break
+                else:
+                    print(f"Command '{sent_command}' sent to board '{esp_id}' does not match fetched command '{fetched_command}'. Retrying verification.")
+
+            if not verification_success:
+                print(f"Failed to verify command '{sent_command}' for board '{esp_id}' after {command_verification_attempts} attempts.")
 
         else:
             print("Failed to send command. Skipping verification.")
