@@ -56,7 +56,7 @@ if __name__ == "__main__":
     server_url = 'http://192.168.10.62:5000'
     cookies_file = 'cookies.txt'  # Adjust path if necessary
     start_id = 1
-    end_id = 100
+    end_id = 100000
     output_file = 'registered_boards.json'  # Output file to store registered boards
 
     register_board(server_url, cookies_file, start_id, end_id, output_file)

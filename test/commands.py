@@ -2,140 +2,96 @@ import requests
 import json
 import random
 import time
-import re
+from http.cookiejar import MozillaCookieJar
 
-# Configuration
-server_url = 'http://192.168.10.62:5000'
-cookies_file = 'cookies.txt'  # Adjust path if necessary
-commands = [
-    "command1",
-    "command2",
-    "command3",
-    # Add more commands as needed
-]
+# ANSI color codes for terminal output
+class colors:
+    GREEN = '\033[92m'
+    RED = '\033[91m'
+    YELLOW = '\033[93m'
+    END = '\033[0m'
 
-# Function to load cookies from cookies.txt using regular expressions
-def load_cookies(cookies_file):
-    try:
-        with open(cookies_file, 'r') as f:
-            cookies_content = f.read()
-            cookies = dict(re.findall(r'([^=\s]*)=([^;\n]*)', cookies_content))
-        return cookies
-    except FileNotFoundError:
-        print(f"Error: {cookies_file} not found.")
-        return {}
-    except Exception as e:
-        print(f"Error loading cookies from {cookies_file}: {e}")
-        return {}
+# Function to read registered boards from JSON file
+def read_registered_boards(filename):
+    with open(filename, 'r') as f:
+        boards = json.load(f)
+    return boards
 
-# Function to load registered boards from JSON file
-def load_registered_boards(file):
-    try:
-        with open(file, 'r') as f:
-            registered_boards = json.load(f)
-        return registered_boards
-    except FileNotFoundError:
-        print(f"Error: {file} not found.")
-        return []
-    except json.JSONDecodeError as e:
-        print(f"Error decoding JSON from {file}: {e}")
-        return []
+# Function to convert Netscape cookies to a dictionary
+def parse_netscape_cookies(cookie_file):
+    cookies = MozillaCookieJar(cookie_file)
+    cookies.load()
+    cookies_dict = {}
+    for cookie in cookies:
+        cookies_dict[cookie.name] = cookie.value
+    return cookies_dict
 
-# Function to send random command to a random board
-def send_random_command(server_url, cookies_file, boards):
-    try:
-        # Load cookies using regular expressions
-        cookies = load_cookies(cookies_file)
+# Function to send command to a specific board using cookies
+def send_command_to_board_with_cookies(esp_id, command, cookies_file):
+    url = 'http://localhost:5000/command'
+    payload = {
+        'esp_id': esp_id,
+        'command': command
+    }
+    
+    cookies_dict = parse_netscape_cookies(cookies_file)
+    response = requests.post(url, headers={'Content-Type': 'application/x-www-form-urlencoded'}, data=payload, cookies=cookies_dict)
+    if response.status_code == 200:
+        print(f"{colors.GREEN}Sent command '{command}' to ESP board '{esp_id}' successfully.{colors.END}")
+    else:
+        print(f"{colors.RED}Error: Failed to send command to ESP board '{esp_id}'.{colors.END}")
+    return esp_id, response
 
-        # Select random board and command
-        board = random.choice(boards)
-        command = random.choice(commands)
+# Function to retrieve and verify command using esp_id and esp_secret_key
+def retrieve_command_with_secret_key(esp_id, esp_secret_key):
+    url = 'http://localhost:5000/get_command'
+    params = {
+        'esp_id': esp_id,
+        'esp_secret_key': esp_secret_key
+    }
+    response = requests.get(url, params=params)
+    if response.status_code == 200:
+        data = response.json()
+        retrieved_command = data.get('command', '')
+        print(" ")
+        print(f"Retrieved command for ESP board '{esp_id}': '{retrieved_command}'")
+        return esp_id, retrieved_command
+    else:
+        print(f"{colors.RED}Failed to retrieve command for ESP board '{esp_id}'. Response status: {response.status_code}{colors.END}")
+    return None, None
 
-        # Prepare payload
-        payload = {
-            'esp_id': board['esp_id'],
-            'command': command
-        }
-
-        # Send POST request
-        response = requests.post(f"{server_url}/command", cookies=cookies, data=payload)
-
-        # Check response
-        if response.status_code == 200:
-            print(f"Command '{command}' sent to board '{board['esp_id']}' successfully.")
-            return board['esp_id'], command  # Return board ID and sent command
-        else:
-            print(f"Failed to send command '{command}' to board '{board['esp_id']}'")
-            print(f"Status code: {response.status_code}")
-            return None, None
-
-    except Exception as e:
-        print(f"Error occurred: {e}")
-        return None, None
-
-# Function to fetch command from API for a specific board
-def fetch_command_from_api(server_url, cookies_file, esp_id):
-    try:
-        # Load cookies using regular expressions
-        cookies = load_cookies(cookies_file)
-
-        # Endpoint for fetching command
-        endpoint = f"{server_url}/get_command"
-
-        # Prepare params
-        params = {
-            'esp_id': esp_id
-        }
-
-        # Send GET request
-        response = requests.get(endpoint, cookies=cookies, params=params)
-
-        # Check response
-        if response.status_code == 200:
-            command_data = response.json()
-            fetched_command = command_data.get('command', '')
-            return fetched_command
-        else:
-            print(f"Failed to fetch command for board '{esp_id}'")
-            print(f"Status code: {response.status_code}")
-            return None
-
-    except Exception as e:
-        print(f"Error occurred: {e}")
-        return None
-
-# Main function to continuously send random commands and verify retrieval
+# Main function to run the script
 def main():
-    boards = load_registered_boards('registered_boards.json')
-
-    if not boards:
-        print("No registered boards found. Exiting.")
-        return
-
-    command_verification_attempts = 3  # Number of times to verify each command
-
+    boards = read_registered_boards('registered_boards.json')
+    cookies_file = 'cookies.txt'
+    requests_per_minute = 100  # Adjust as per your requirement
+    seconds_per_request = 60 / requests_per_minute
+    
     while True:
-        esp_id, sent_command = send_random_command(server_url, cookies_file, boards)
+        # Select a random board
+        board = random.choice(boards)
+        esp_id = board['esp_id']
         
-        if esp_id and sent_command:
-            verification_success = False
-            for _ in range(command_verification_attempts):
-                time.sleep(random.uniform(1, 10))  # Random sleep interval between 1 to 10 seconds
-                fetched_command = fetch_command_from_api(server_url, cookies_file, esp_id)
-                
-                if fetched_command == sent_command:
-                    print(f"Command '{sent_command}' sent to board '{esp_id}' matches fetched command '{fetched_command}'. Verification successful.")
-                    verification_success = True
-                    break
-                else:
-                    print(f"Command '{sent_command}' sent to board '{esp_id}' does not match fetched command '{fetched_command}'. Retrying verification.")
-
-            if not verification_success:
-                print(f"Failed to verify command '{sent_command}' for board '{esp_id}' after {command_verification_attempts} attempts.")
-
+        # Send command to the selected board
+        command = "your_command_here"
+        esp_id_sent, send_response = send_command_to_board_with_cookies(esp_id, command, cookies_file)
+        if send_response.status_code == 200:
+            time.sleep(seconds_per_request)
+            
+            # Retrieve command for the same board
+            esp_secret_key = board['esp_secret_key']
+            esp_id_retrieved, retrieved_command = retrieve_command_with_secret_key(esp_id, esp_secret_key)
+            if esp_id_retrieved == esp_id and retrieved_command == command:
+                print(" ")
+                print(f"{colors.GREEN}Verified: Retrieved command '{retrieved_command}' matches sent command for ESP board '{esp_id}'.{colors.END}")
+            else:
+                print(f"{colors.RED}Error: Retrieved command '{retrieved_command}' does not match sent command '{command}' for ESP board '{esp_id}'.{colors.END}")
+                input(f"{colors.YELLOW}Press Enter to continue...{colors.END}")
         else:
-            print("Failed to send command. Skipping verification.")
-            time.sleep(random.uniform(1, 10))  # Random sleep interval between 1 to 10 seconds
+            print(f"{colors.RED}Error: Failed to send command to ESP board '{esp_id}'.{colors.END}")
+            input(f"{colors.YELLOW}Press Enter to continue...{colors.END}")
+        
+        time.sleep(seconds_per_request)
 
 if __name__ == "__main__":
     main()
