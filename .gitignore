@@ -2,3 +2,4 @@ instance/
 __pycache__/
 *.db
 cookies.txt
+test/registered_boards.json
