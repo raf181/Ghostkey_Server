@@ -47,18 +47,34 @@ func loadedCommand(c *gin.Context) {
         return
     }
 
-    // Save commands associated with ESP ID in your database
+    // Begin a database transaction
+    tx := db.Begin()
+
+    // Delete existing commands for the given ESP ID
+    if err := tx.Where("esp_id = ?", payload.EspID).Delete(&Command{}).Error; err != nil {
+        tx.Rollback()
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete existing commands"})
+        return
+    }
+
+    // Save new commands associated with the ESP ID
     for _, cmd := range payload.Commands {
         newCommand := Command{EspID: payload.EspID, Command: cmd}
-        if err := db.Create(&newCommand).Error; err != nil {
+        if err := tx.Create(&newCommand).Error; err != nil {
+            tx.Rollback()
             c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save commands"})
             return
         }
     }
 
+    // Commit the transaction
+    if err := tx.Commit().Error; err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit transaction"})
+        return
+    }
+
     c.JSON(http.StatusOK, gin.H{"message": "Commands saved successfully"})
 }
-
 
 func getLoadedCommand(c *gin.Context) {
     espID := c.Query("esp_id")
@@ -81,7 +97,6 @@ func getLoadedCommand(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"esp_id": espID, "commands": commandList})
 }
-
 
 func registerUser(c *gin.Context) {
     secretKey := c.PostForm("secret_key")
