@@ -22,6 +22,8 @@ func registerRoutes(r *gin.Engine) {
     r.DELETE("/remove_device", removeDevice)
 
     // Command routes
+    r.POST("/loaded_command", loadedCommand)
+    r.GET("/get_loaded_command", getLoadedCommand)
     r.POST("/command", command)
     r.GET("/get_command", getCommand)
     r.POST("/remove_command", removeCommand)
@@ -31,6 +33,55 @@ func registerRoutes(r *gin.Engine) {
 // [1]:Remuve r.GET("/last_request_time", lastRequestTime)
     r.GET("/active_boards", getActiveBoards)// [1]:Remuve 
 }
+
+func loadedCommand(c *gin.Context) {
+    var payload LoadedCommandPayload
+
+    if err := c.ShouldBindJSON(&payload); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+        return
+    }
+
+    if payload.EspID == "" || len(payload.Commands) == 0 {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "ESP ID and commands are required"})
+        return
+    }
+
+    // Save commands associated with ESP ID in your database
+    for _, cmd := range payload.Commands {
+        newCommand := Command{EspID: payload.EspID, Command: cmd}
+        if err := db.Create(&newCommand).Error; err != nil {
+            c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save commands"})
+            return
+        }
+    }
+
+    c.JSON(http.StatusOK, gin.H{"message": "Commands saved successfully"})
+}
+
+
+func getLoadedCommand(c *gin.Context) {
+    espID := c.Query("esp_id")
+
+    if espID == "" {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "ESP ID is required"})
+        return
+    }
+
+    var commands []Command
+    if err := db.Where("esp_id = ?", espID).Find(&commands).Error; err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve commands"})
+        return
+    }
+
+    commandList := make([]string, len(commands))
+    for i, cmd := range commands {
+        commandList[i] = cmd.Command
+    }
+
+    c.JSON(http.StatusOK, gin.H{"esp_id": espID, "commands": commandList})
+}
+
 
 func registerUser(c *gin.Context) {
     secretKey := c.PostForm("secret_key")
@@ -151,8 +202,6 @@ func removeDevice(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"message": "ESP32 removed successfully"})
 }
-
-
 
 func command(c *gin.Context) {
     espID := c.PostForm("esp_id")

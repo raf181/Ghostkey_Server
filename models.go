@@ -41,3 +41,8 @@ type Command struct {
     EspID   string `gorm:"not null"`
     Command string `gorm:"not null"`
 }
+
+type LoadedCommandPayload struct {
+    EspID    string   `json:"esp_id" binding:"required"`
+    Commands []string `json:"commands" binding:"required"`
+}
