@@ -12,14 +12,22 @@ import (
 )
 
 func registerRoutes(r *gin.Engine) {
+    // User routes
     r.POST("/register_user", registerUser)
     r.POST("/login", login)
     r.POST("/logout", logout)
-    r.POST("/register_device", registerDevice)
+
+    // Device routes
+    r.POST("/register_device", registerDevice) 
+    r.DELETE("/remove_device", removeDevice)
+
+    // Command routes
     r.POST("/command", command)
     r.GET("/get_command", getCommand)
     r.POST("/remove_command", removeCommand)
     r.GET("/get_all_commands", getAllCommands)
+
+    // Active boards route
 // [1]:Remuve r.GET("/last_request_time", lastRequestTime)
     r.GET("/active_boards", getActiveBoards)// [1]:Remuve 
 }
@@ -117,6 +125,34 @@ func registerDevice(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"message": "ESP32 registered successfully", "esp_id": espID})
 }
+
+func removeDevice(c *gin.Context) {
+    espID := c.Query("esp_id")
+    espSecretKey := c.Query("secret_key")
+
+    // Validate parameters
+    if espID == "" || espSecretKey == "" {
+        c.JSON(http.StatusBadRequest, gin.H{"message": "ESP ID and secret key are required"})
+        return
+    }
+
+    // Your logic to find and delete the device
+    var device ESPDevice
+    if err := db.Where("esp_id = ? AND esp_secret_key = ?", espID, espSecretKey).First(&device).Error; err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid ESP ID or secret key"})
+        return
+    }
+
+    // Delete the device
+    if err := db.Delete(&device).Error; err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to remove ESP32"})
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{"message": "ESP32 removed successfully"})
+}
+
+
 
 func command(c *gin.Context) {
     espID := c.PostForm("esp_id")
@@ -275,3 +311,4 @@ func getActiveBoards(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"active_boards": activeBoards})
 }
+
