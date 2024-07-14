@@ -22,7 +22,7 @@ func main() {
         log.Fatalf("Failed to connect to database: %v", err)
     }
 
-    db.AutoMigrate(&User{}, &ESPDevice{}, &Command{})
+    db.AutoMigrate(&User{}, &ESPDevice{}, &Command{}, &FileMetadata{})
 
     r := gin.Default()
 

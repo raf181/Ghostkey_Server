@@ -46,3 +46,12 @@ type LoadedCommandPayload struct {
     EspID    string   `json:"esp_id" binding:"required"`
     Commands []string `json:"commands" binding:"required"`
 }
+
+type FileMetadata struct {
+    gorm.Model
+    FileName           string
+    FilePath           string
+    EspID              string
+    DeliveryKey        string
+    EncryptionPassword string
+}

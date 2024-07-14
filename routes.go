@@ -4,11 +4,14 @@ package main
 
 import (
     "net/http"
+    "io"
     "time"
     "os"
+    "path/filepath"
 
     "github.com/gin-contrib/sessions"
     "github.com/gin-gonic/gin"
+    //"gorm.io/gorm"
 )
 
 func registerRoutes(r *gin.Engine) {
@@ -32,6 +35,10 @@ func registerRoutes(r *gin.Engine) {
     // Active boards route
 // [1]:Remuve r.GET("/last_request_time", lastRequestTime)
     r.GET("/active_boards", getActiveBoards)// [1]:Remuve 
+
+    // CARGO
+    r.POST("/cargo_delivery", cargoDelivery)
+    r.POST("/register_mail", registerMail)
 }
 
 func loadedCommand(c *gin.Context) {
@@ -283,7 +290,6 @@ func getCommand(c *gin.Context) {
     c.JSON(http.StatusOK, gin.H{"command": command.Command})
 }
 
-
 func removeCommand(c *gin.Context) {
     commandID := c.PostForm("command_id")
 
@@ -376,3 +382,101 @@ func getActiveBoards(c *gin.Context) {
     c.JSON(http.StatusOK, gin.H{"active_boards": activeBoards})
 }
 
+// CARGO
+func cargoDelivery(c *gin.Context) {
+    espID := c.PostForm("esp_id")
+    deliveryKey := c.PostForm("delivery_key")
+    encryptionPassword := c.PostForm("encryption_password")
+
+    if espID == "" || deliveryKey == "" || encryptionPassword == "" {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "ESP ID, delivery key, and encryption password are required"})
+        return
+    }
+
+    // Read file content from request
+    file, header, err := c.Request.FormFile("file")
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "File upload failed", "details": err.Error()})
+        return
+    }
+    defer file.Close()
+
+    // Create a directory for storing files if it doesn't exist
+    outputDir := "cargo_files"
+    if _, err := os.Stat(outputDir); os.IsNotExist(err) {
+        err := os.Mkdir(outputDir, 0755)
+        if err != nil {
+            c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create directory", "details": err.Error()})
+            return
+        }
+    }
+
+    // Save the file to the specified directory
+    outputPath := filepath.Join(outputDir, header.Filename)
+    out, err := os.Create(outputPath)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file", "details": err.Error()})
+        return
+    }
+    defer out.Close()
+
+    // Read the file content and write it to the output file
+    if _, err := io.Copy(out, file); err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to write file", "details": err.Error()})
+        return
+    }
+
+    // Save file metadata to the database
+    err = saveFileMetadataToDatabase(header.Filename, outputPath, espID, deliveryKey, encryptionPassword)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file metadata", "details": err.Error()})
+        return
+    }
+
+    // Respond with success message
+    c.JSON(http.StatusOK, gin.H{"message": "File delivered successfully"})
+}
+
+func saveFileMetadataToDatabase(fileName, filePath, espID, deliveryKey, encryptionPassword string) error {
+    // Example: Save file metadata to the database
+    fileMetadata := FileMetadata{
+        FileName:           fileName,
+        FilePath:           filePath,
+        EspID:              espID,
+        DeliveryKey:        deliveryKey,
+        EncryptionPassword: encryptionPassword,
+    }
+    if err := db.Create(&fileMetadata).Error; err != nil {
+        return err
+    }
+    return nil
+}
+
+func registerMail(c *gin.Context) {
+    espID := c.PostForm("esp_id")
+    deliveryKey := c.PostForm("delivery_key")
+    encryptionPassword := c.PostForm("encryption_password")
+
+    if espID == "" || deliveryKey == "" || encryptionPassword == "" {
+        c.JSON(http.StatusBadRequest, gin.H{"message": "ESP ID, delivery key, and encryption password are required"})
+        return
+    }
+
+    var device ESPDevice
+    if err := db.Where("esp_id = ?", espID).First(&device).Error; err == nil {
+        c.JSON(http.StatusBadRequest, gin.H{"message": "ESP ID already exists"})
+        return
+    }
+
+    newDevice := ESPDevice{
+        EspID:           espID,
+        EspSecretKey:    deliveryKey,
+        LastRequestTime: nil,
+    }
+    if err := db.Create(&newDevice).Error; err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to register device"})
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{"message": "Device registered successfully"})
+}
