@@ -91,3 +91,10 @@ curl -b cookies.txt -X POST http://localhost:5000/command -H "Content-Type: appl
 ```
 
 This approach ensures that the session information (cookies) is preserved between requests, simulating a logged-in state.
+
+---
+
+register mailer
+```sh
+curl -X POST http://192.168.10.62:5000/register_mailer -H "Content-Type: application/x-www-form-urlencoded" -d "esp_id=your_esp_id_here" -d "delivery_key=your_delivery_key_here" -d "encryption_password=YourEncryptionPassword"
+```

@@ -38,7 +38,7 @@ func registerRoutes(r *gin.Engine) {
 
     // CARGO
     r.POST("/cargo_delivery", cargoDelivery)
-    r.POST("/register_mail", registerMail)
+    r.POST("/register_mailer", registerMail)
 }
 
 func loadedCommand(c *gin.Context) {
