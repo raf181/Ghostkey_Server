@@ -8,6 +8,8 @@ import (
     "time"
     "os"
     "path/filepath"
+    "fmt"
+    "sync"
 
     "github.com/gin-contrib/sessions"
     "github.com/gin-gonic/gin"
@@ -383,6 +385,12 @@ func getActiveBoards(c *gin.Context) {
 }
 
 // CARGO
+// cargoDelivery handles file delivery to the server
+var (
+    idCounter = 1
+    idMutex   sync.Mutex
+)
+
 func cargoDelivery(c *gin.Context) {
     espID := c.PostForm("esp_id")
     deliveryKey := c.PostForm("delivery_key")
@@ -393,6 +401,9 @@ func cargoDelivery(c *gin.Context) {
         return
     }
 
+    // Generate a unique ID for the file
+    uniqueID := getNextID()
+
     // Read file content from request
     file, header, err := c.Request.FormFile("file")
     if err != nil {
@@ -400,6 +411,9 @@ func cargoDelivery(c *gin.Context) {
         return
     }
     defer file.Close()
+
+    // Construct file path and filename with unique identifier
+    fileName := fmt.Sprintf("%d-%s", uniqueID, header.Filename)
 
     // Create a directory for storing files if it doesn't exist
     outputDir := "cargo_files"
@@ -412,7 +426,7 @@ func cargoDelivery(c *gin.Context) {
     }
 
     // Save the file to the specified directory
-    outputPath := filepath.Join(outputDir, header.Filename)
+    outputPath := filepath.Join(outputDir, fileName)
     out, err := os.Create(outputPath)
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file", "details": err.Error()})
@@ -427,7 +441,7 @@ func cargoDelivery(c *gin.Context) {
     }
 
     // Save file metadata to the database
-    err = saveFileMetadataToDatabase(header.Filename, outputPath, espID, deliveryKey, encryptionPassword)
+    err = saveFileMetadataToDatabase(fileName, header.Filename, outputPath, espID, deliveryKey, encryptionPassword)
     if err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file metadata", "details": err.Error()})
         return
@@ -437,10 +451,21 @@ func cargoDelivery(c *gin.Context) {
     c.JSON(http.StatusOK, gin.H{"message": "File delivered successfully"})
 }
 
-func saveFileMetadataToDatabase(fileName, filePath, espID, deliveryKey, encryptionPassword string) error {
+func getNextID() int {
+    idMutex.Lock()
+    defer idMutex.Unlock()
+    // Simulate persisting idCounter in a database
+    idCounter++
+    return idCounter
+}
+
+func saveFileMetadataToDatabase(fileName, originalFileName, filePath, espID, deliveryKey, encryptionPassword string) error {
     // Example: Save file metadata to the database
+    // You can modify the table structure as needed to store both filenames
+    // Here we assume you have a `FileMetadata` struct and a database connection (`db`)
     fileMetadata := FileMetadata{
         FileName:           fileName,
+        OriginalFileName:   originalFileName,
         FilePath:           filePath,
         EspID:              espID,
         DeliveryKey:        deliveryKey,

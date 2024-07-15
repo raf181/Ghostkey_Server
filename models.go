@@ -50,6 +50,7 @@ type LoadedCommandPayload struct {
 type FileMetadata struct {
     gorm.Model
     FileName           string
+    OriginalFileName   string
     FilePath           string
     EspID              string
     DeliveryKey        string
