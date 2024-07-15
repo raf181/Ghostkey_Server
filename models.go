@@ -1,5 +1,3 @@
-// Models.go
-
 package main
 
 import (
@@ -9,6 +7,12 @@ import (
     "golang.org/x/crypto/bcrypt"
 )
 
+type VersionVector map[string]time.Time
+
+type GossipPayload struct {
+    Commands      []Command
+    VersionVector VersionVector
+}
 type User struct {
     gorm.Model
     Username     string `gorm:"unique;not null"`

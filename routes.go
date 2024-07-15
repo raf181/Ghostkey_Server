@@ -10,10 +10,11 @@ import (
     "path/filepath"
     "fmt"
     "sync"
+    "log"
 
     "github.com/gin-contrib/sessions"
     "github.com/gin-gonic/gin"
-    //"gorm.io/gorm"
+    "gorm.io/gorm"
 )
 
 func registerRoutes(r *gin.Engine) {
@@ -41,6 +42,11 @@ func registerRoutes(r *gin.Engine) {
     // CARGO
     r.POST("/cargo_delivery", cargoDelivery)
     r.POST("/register_mailer", registerMail)
+
+    // Gossip route
+    r.POST("/upload", uploadFile)
+    r.POST("/authenticate", authenticate)
+    r.POST("/gossip", receiveGossip)
 }
 
 func loadedCommand(c *gin.Context) {
@@ -390,7 +396,6 @@ var (
     idCounter = 1
     idMutex   sync.Mutex
 )
-
 func cargoDelivery(c *gin.Context) {
     espID := c.PostForm("esp_id")
     deliveryKey := c.PostForm("delivery_key")
@@ -450,7 +455,6 @@ func cargoDelivery(c *gin.Context) {
     // Respond with success message
     c.JSON(http.StatusOK, gin.H{"message": "File delivered successfully"})
 }
-
 func getNextID() int {
     idMutex.Lock()
     defer idMutex.Unlock()
@@ -458,7 +462,6 @@ func getNextID() int {
     idCounter++
     return idCounter
 }
-
 func saveFileMetadataToDatabase(fileName, originalFileName, filePath, espID, deliveryKey, encryptionPassword string) error {
     // Example: Save file metadata to the database
     // You can modify the table structure as needed to store both filenames
@@ -476,7 +479,6 @@ func saveFileMetadataToDatabase(fileName, originalFileName, filePath, espID, del
     }
     return nil
 }
-
 func registerMail(c *gin.Context) {
     espID := c.PostForm("esp_id")
     deliveryKey := c.PostForm("delivery_key")
@@ -504,4 +506,98 @@ func registerMail(c *gin.Context) {
     }
 
     c.JSON(http.StatusOK, gin.H{"message": "Device registered successfully"})
+}
+
+// Gossip
+// uploadFile handles file uploads to the server
+func uploadFile(c *gin.Context) {
+    file, header, err := c.Request.FormFile("file")
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to get file"})
+        return
+    }
+    defer file.Close()
+
+    espID := c.PostForm("esp_id")
+    deliveryKey := c.PostForm("delivery_key")
+    encryptionPassword := c.PostForm("encryption_password")
+
+    filePath := "./uploads/" + header.Filename
+    out, err := os.Create(filePath)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create file"})
+        return
+    }
+    defer out.Close()
+
+    _, err = io.Copy(out, file)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
+        return
+    }
+
+    fileMetadata := FileMetadata{
+        FileName:           header.Filename,
+        OriginalFileName:   header.Filename,
+        FilePath:           filePath,
+        EspID:              espID,
+        DeliveryKey:        deliveryKey,
+        EncryptionPassword: encryptionPassword,
+    }
+    db.Create(&fileMetadata)
+
+    c.JSON(http.StatusOK, gin.H{"status": "file uploaded"})
+}
+func authenticate(c *gin.Context) {
+    var login struct {
+        Username string `json:"username" binding:"required"`
+        Password string `json:"password" binding:"required"`
+    }
+
+    if err := c.ShouldBindJSON(&login); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+        return
+    }
+
+    var user User
+    if err := db.Where("username = ?", login.Username).First(&user).Error; err != nil {
+        c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid username or password"})
+        return
+    }
+
+    if !user.CheckPassword(login.Password) {
+        c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid username or password"})
+        return
+    }
+
+    session := sessions.Default(c)
+    session.Set("user_id", user.ID)
+    session.Save()
+
+    c.JSON(http.StatusOK, gin.H{"status": "authenticated"})
+}
+func receiveGossip(c *gin.Context) {
+    var payload GossipPayload
+    if err := c.BindJSON(&payload); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid payload"})
+        return
+    }
+
+    // Merge remote commands
+    for _, remoteCommand := range payload.Commands {
+        var localCommand Command
+        if err := db.Where("id = ?", remoteCommand.ID).First(&localCommand).Error; err != nil {
+            if err == gorm.ErrRecordNotFound {
+                db.Create(&remoteCommand)
+            } else {
+                log.Printf("Failed to check existing command: %v", err)
+            }
+        } else {
+            if remoteCommand.UpdatedAt.After(localCommand.UpdatedAt) {
+                db.Save(&remoteCommand)
+            }
+        }
+    }
+
+    c.JSON(http.StatusOK, gin.H{"status": "success"})
 }
