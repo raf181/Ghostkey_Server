@@ -564,7 +564,8 @@ func authenticate(c *gin.Context) {
     session.Save()
 
     c.JSON(http.StatusOK, gin.H{"status": "authenticated"})
-}                                   
+}       
+
 func receiveGossip(c *gin.Context) {
     var payload GossipPayload
     if err := c.BindJSON(&payload); err != nil {
@@ -588,20 +589,18 @@ func receiveGossip(c *gin.Context) {
         }
     }
 
-    // Merge remote ESP devices
+    // Merge remote devices
     for _, remoteDevice := range payload.ESPDevices {
         var localDevice ESPDevice
         if err := db.Where("esp_id = ?", remoteDevice.EspID).First(&localDevice).Error; err != nil {
             if err == gorm.ErrRecordNotFound {
                 db.Create(&remoteDevice)
             } else {
-                log.Printf("Failed to check existing ESP device: %v", err)
+                log.Printf("Failed to check existing device: %v", err)
             }
         } else {
             if remoteDevice.UpdatedAt.After(localDevice.UpdatedAt) {
-                localDevice.EspSecretKey = remoteDevice.EspSecretKey
-                localDevice.LastRequestTime = remoteDevice.LastRequestTime
-                db.Save(&localDevice)
+                db.Save(&remoteDevice)
             }
         }
     }
@@ -609,7 +608,7 @@ func receiveGossip(c *gin.Context) {
     // Merge remote users
     for _, remoteUser := range payload.Users {
         var localUser User
-        if err := db.Where("username = ?", remoteUser.Username).First(&localUser).Error; err != nil {
+        if err := db.Where("id = ?", remoteUser.ID).First(&localUser).Error; err != nil {
             if err == gorm.ErrRecordNotFound {
                 db.Create(&remoteUser)
             } else {
@@ -617,8 +616,7 @@ func receiveGossip(c *gin.Context) {
             }
         } else {
             if remoteUser.UpdatedAt.After(localUser.UpdatedAt) {
-                localUser.PasswordHash = remoteUser.PasswordHash
-                db.Save(&localUser)
+                db.Save(&remoteUser)
             }
         }
     }
