@@ -48,7 +48,6 @@ func registerRoutes(r *gin.Engine) {
     r.POST("/authenticate", authenticate)
     r.POST("/gossip", receiveGossip)
 }
-
 func loadedCommand(c *gin.Context) {
     var payload LoadedCommandPayload
 
@@ -90,7 +89,6 @@ func loadedCommand(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"message": "Commands saved successfully"})
 }
-
 func getLoadedCommand(c *gin.Context) {
     espID := c.Query("esp_id")
 
@@ -112,7 +110,6 @@ func getLoadedCommand(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"esp_id": espID, "commands": commandList})
 }
-
 func registerUser(c *gin.Context) {
     secretKey := c.PostForm("secret_key")
     expectedSecretKey := os.Getenv("SECRET_KEY")
@@ -148,7 +145,6 @@ func registerUser(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"message": "User registered successfully"})
 }
-
 func login(c *gin.Context) {
     username := c.PostForm("username")
     password := c.PostForm("password")
@@ -174,7 +170,6 @@ func login(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"message": "Logged in successfully"})
 }
-
 func logout(c *gin.Context) {
     session := sessions.Default(c)
     session.Clear()
@@ -182,7 +177,6 @@ func logout(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"message": "Logged out successfully"})
 }
-
 func registerDevice(c *gin.Context) {
     espID := c.PostForm("esp_id")
     espSecretKey := c.PostForm("esp_secret_key")
@@ -206,7 +200,6 @@ func registerDevice(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"message": "ESP32 registered successfully", "esp_id": espID})
 }
-
 func removeDevice(c *gin.Context) {
     espID := c.Query("esp_id")
     espSecretKey := c.Query("secret_key")
@@ -232,7 +225,6 @@ func removeDevice(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"message": "ESP32 removed successfully"})
 }
-
 func command(c *gin.Context) {
     espID := c.PostForm("esp_id")
     commandText := c.PostForm("command")
@@ -256,7 +248,6 @@ func command(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"message": "Command added successfully"})
 }
-
 func getCommand(c *gin.Context) {
     espID := c.Query("esp_id")
     espSecretKey := c.Query("esp_secret_key")
@@ -297,7 +288,6 @@ func getCommand(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"command": command.Command})
 }
-
 func removeCommand(c *gin.Context) {
     commandID := c.PostForm("command_id")
 
@@ -319,7 +309,6 @@ func removeCommand(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"message": "Command removed successfully"})
 }
-
 func getAllCommands(c *gin.Context) {
     espID := c.Query("esp_id")
 
@@ -575,7 +564,7 @@ func authenticate(c *gin.Context) {
     session.Save()
 
     c.JSON(http.StatusOK, gin.H{"status": "authenticated"})
-}
+}                                   
 func receiveGossip(c *gin.Context) {
     var payload GossipPayload
     if err := c.BindJSON(&payload); err != nil {
@@ -595,6 +584,41 @@ func receiveGossip(c *gin.Context) {
         } else {
             if remoteCommand.UpdatedAt.After(localCommand.UpdatedAt) {
                 db.Save(&remoteCommand)
+            }
+        }
+    }
+
+    // Merge remote ESP devices
+    for _, remoteDevice := range payload.ESPDevices {
+        var localDevice ESPDevice
+        if err := db.Where("esp_id = ?", remoteDevice.EspID).First(&localDevice).Error; err != nil {
+            if err == gorm.ErrRecordNotFound {
+                db.Create(&remoteDevice)
+            } else {
+                log.Printf("Failed to check existing ESP device: %v", err)
+            }
+        } else {
+            if remoteDevice.UpdatedAt.After(localDevice.UpdatedAt) {
+                localDevice.EspSecretKey = remoteDevice.EspSecretKey
+                localDevice.LastRequestTime = remoteDevice.LastRequestTime
+                db.Save(&localDevice)
+            }
+        }
+    }
+
+    // Merge remote users
+    for _, remoteUser := range payload.Users {
+        var localUser User
+        if err := db.Where("username = ?", remoteUser.Username).First(&localUser).Error; err != nil {
+            if err == gorm.ErrRecordNotFound {
+                db.Create(&remoteUser)
+            } else {
+                log.Printf("Failed to check existing user: %v", err)
+            }
+        } else {
+            if remoteUser.UpdatedAt.After(localUser.UpdatedAt) {
+                localUser.PasswordHash = remoteUser.PasswordHash
+                db.Save(&localUser)
             }
         }
     }

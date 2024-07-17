@@ -46,7 +46,7 @@ func main() {
     // Start gossip protocol
     go startGossip()
 
-    if err := r.Run(":5000"); err != nil {
+    if err := r.Run(":5001"); err != nil {
         log.Fatalf("Failed to run server: %v", err)
     }
 }
@@ -59,7 +59,7 @@ func startGossip() {
 }
 
 func gossip() {
-    nodes := []string{"http://node1:5000", "http://node2:5000"} // Add your node URLs here
+    nodes := []string{"http://localhost:5002", "http://localhost:5003", "http://localhost:5004"} // Add your node URLs here
     targetNode := nodes[rand.Intn(len(nodes))]
 
     var localVersionVector VersionVector
