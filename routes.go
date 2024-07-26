@@ -411,7 +411,8 @@ func cargoDelivery(c *gin.Context) {
     defer file.Close()
 
     uniqueID := getNextID()
-    fileName := fmt.Sprintf("%d-%s", uniqueID, header.Filename)
+    nodeIdentifier := "node1" // Node identifier
+    fileName := fmt.Sprintf("%s-%d-%s", nodeIdentifier, uniqueID, header.Filename)
     outputDir := "cargo_files"
     if _, err := os.Stat(outputDir); os.IsNotExist(err) {
         err := os.Mkdir(outputDir, 0755)
