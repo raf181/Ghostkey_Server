@@ -3,18 +3,20 @@
 package main
 
 import (
-    "net/http"
-    "io"
-    "time"
-    "os"
-    "path/filepath"
-    "fmt"
-    "sync"
+	"bytes"
+	"fmt"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
     "log"
 
-    "github.com/gin-contrib/sessions"
-    "github.com/gin-gonic/gin"
-    "gorm.io/gorm"
+	"github.com/gin-contrib/sessions"
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 func registerRoutes(r *gin.Engine) {
@@ -42,12 +44,8 @@ func registerRoutes(r *gin.Engine) {
     // CARGO
     r.POST("/cargo_delivery", cargoDelivery)
     r.POST("/register_mailer", registerMail)
-
-    // Gossip route
-    r.POST("/upload", uploadFile)
-    r.POST("/authenticate", authenticate)
-    r.POST("/gossip", receiveGossip)
 }
+
 func loadedCommand(c *gin.Context) {
     var payload LoadedCommandPayload
 
@@ -89,6 +87,7 @@ func loadedCommand(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"message": "Commands saved successfully"})
 }
+
 func getLoadedCommand(c *gin.Context) {
     espID := c.Query("esp_id")
 
@@ -110,6 +109,7 @@ func getLoadedCommand(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"esp_id": espID, "commands": commandList})
 }
+
 func registerUser(c *gin.Context) {
     secretKey := c.PostForm("secret_key")
     expectedSecretKey := os.Getenv("SECRET_KEY")
@@ -145,6 +145,7 @@ func registerUser(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"message": "User registered successfully"})
 }
+
 func login(c *gin.Context) {
     username := c.PostForm("username")
     password := c.PostForm("password")
@@ -170,6 +171,7 @@ func login(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"message": "Logged in successfully"})
 }
+
 func logout(c *gin.Context) {
     session := sessions.Default(c)
     session.Clear()
@@ -177,6 +179,7 @@ func logout(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"message": "Logged out successfully"})
 }
+
 func registerDevice(c *gin.Context) {
     espID := c.PostForm("esp_id")
     espSecretKey := c.PostForm("esp_secret_key")
@@ -200,6 +203,7 @@ func registerDevice(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"message": "ESP32 registered successfully", "esp_id": espID})
 }
+
 func removeDevice(c *gin.Context) {
     espID := c.Query("esp_id")
     espSecretKey := c.Query("secret_key")
@@ -225,6 +229,7 @@ func removeDevice(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"message": "ESP32 removed successfully"})
 }
+
 func command(c *gin.Context) {
     espID := c.PostForm("esp_id")
     commandText := c.PostForm("command")
@@ -248,6 +253,7 @@ func command(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"message": "Command added successfully"})
 }
+
 func getCommand(c *gin.Context) {
     espID := c.Query("esp_id")
     espSecretKey := c.Query("esp_secret_key")
@@ -288,6 +294,7 @@ func getCommand(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"command": command.Command})
 }
+
 func removeCommand(c *gin.Context) {
     commandID := c.PostForm("command_id")
 
@@ -309,6 +316,7 @@ func removeCommand(c *gin.Context) {
 
     c.JSON(http.StatusOK, gin.H{"message": "Command removed successfully"})
 }
+
 func getAllCommands(c *gin.Context) {
     espID := c.Query("esp_id")
 
@@ -385,6 +393,7 @@ var (
     idCounter = 1
     idMutex   sync.Mutex
 )
+
 func cargoDelivery(c *gin.Context) {
     espID := c.PostForm("esp_id")
     deliveryKey := c.PostForm("delivery_key")
@@ -395,10 +404,6 @@ func cargoDelivery(c *gin.Context) {
         return
     }
 
-    // Generate a unique ID for the file
-    uniqueID := getNextID()
-
-    // Read file content from request
     file, header, err := c.Request.FormFile("file")
     if err != nil {
         c.JSON(http.StatusBadRequest, gin.H{"error": "File upload failed", "details": err.Error()})
@@ -406,10 +411,9 @@ func cargoDelivery(c *gin.Context) {
     }
     defer file.Close()
 
-    // Construct file path and filename with unique identifier
-    fileName := fmt.Sprintf("%d-%s", uniqueID, header.Filename)
-
-    // Create a directory for storing files if it doesn't exist
+    uniqueID := getNextID()
+    nodeIdentifier := "node1" // Node identifier
+    fileName := fmt.Sprintf("%s-%d-%s", nodeIdentifier, uniqueID, header.Filename)
     outputDir := "cargo_files"
     if _, err := os.Stat(outputDir); os.IsNotExist(err) {
         err := os.Mkdir(outputDir, 0755)
@@ -419,7 +423,6 @@ func cargoDelivery(c *gin.Context) {
         }
     }
 
-    // Save the file to the specified directory
     outputPath := filepath.Join(outputDir, fileName)
     out, err := os.Create(outputPath)
     if err != nil {
@@ -428,22 +431,34 @@ func cargoDelivery(c *gin.Context) {
     }
     defer out.Close()
 
-    // Read the file content and write it to the output file
     if _, err := io.Copy(out, file); err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to write file", "details": err.Error()})
         return
     }
 
-    // Save file metadata to the database
-    err = saveFileMetadataToDatabase(fileName, header.Filename, outputPath, espID, deliveryKey, encryptionPassword)
-    if err != nil {
+    fileMetadata := FileMetadata{
+        FileName:           fileName,
+        OriginalFileName:   header.Filename,
+        FilePath:           outputPath,
+        EspID:              espID,
+        DeliveryKey:        deliveryKey,
+        EncryptionPassword: encryptionPassword,
+    }
+    if err := db.Create(&fileMetadata).Error; err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file metadata", "details": err.Error()})
         return
     }
 
-    // Respond with success message
+    // Send file to Depo server
+    err = sendFileToDepo(outputPath, fileName, espID, deliveryKey, encryptionPassword)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to deliver file to Depo server", "details": err.Error()})
+        return
+    }
+
     c.JSON(http.StatusOK, gin.H{"message": "File delivered successfully"})
 }
+
 func getNextID() int {
     idMutex.Lock()
     defer idMutex.Unlock()
@@ -451,6 +466,7 @@ func getNextID() int {
     idCounter++
     return idCounter
 }
+
 func saveFileMetadataToDatabase(fileName, originalFileName, filePath, espID, deliveryKey, encryptionPassword string) error {
     // Example: Save file metadata to the database
     // You can modify the table structure as needed to store both filenames
@@ -468,6 +484,7 @@ func saveFileMetadataToDatabase(fileName, originalFileName, filePath, espID, del
     }
     return nil
 }
+
 func registerMail(c *gin.Context) {
     espID := c.PostForm("esp_id")
     deliveryKey := c.PostForm("delivery_key")
@@ -495,6 +512,61 @@ func registerMail(c *gin.Context) {
     }
 
     c.JSON(http.StatusOK, gin.H{"message": "Device registered successfully"})
+}
+
+func sendFileToDepo(filePath, fileName, espID, deliveryKey, encryptionPassword string) error {
+    file, err := os.Open(filePath)
+    if err != nil {
+        return err
+    }
+    defer file.Close()
+
+    body := &bytes.Buffer{}
+    writer := multipart.NewWriter(body)
+
+    // Add file
+    part, err := writer.CreateFormFile("file", filepath.Base(fileName))
+    if err != nil {
+        return err
+    }
+    _, err = io.Copy(part, file)
+    if err != nil {
+        return err
+    }
+
+    // Add other fields
+    _ = writer.WriteField("esp_id", espID)
+    _ = writer.WriteField("delivery_key", deliveryKey)
+    _ = writer.WriteField("encryption_password", encryptionPassword)
+
+    err = writer.Close()
+    if err != nil {
+        return err
+    }
+
+    req, err := http.NewRequest("POST", "http://localhost:6000/upload_file", body)
+    if err != nil {
+        return err
+    }
+    req.Header.Set("Content-Type", writer.FormDataContentType())
+
+    client := &http.Client{}
+    resp, err := client.Do(req)
+    if err != nil {
+        return err
+    }
+    defer resp.Body.Close()
+
+    respBody, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return err
+    }
+
+    if resp.StatusCode != http.StatusOK {
+        return fmt.Errorf("failed to upload file to Depo server: %s", string(respBody))
+    }
+
+    return nil
 }
 
 // Gossip
