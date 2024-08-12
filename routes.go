@@ -12,10 +12,11 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+   "log"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
-	//"gorm.io/gorm"
+	"gorm.io/gorm"
 )
 
 func registerRoutes(r *gin.Engine) {
@@ -567,4 +568,131 @@ func sendFileToDepo(filePath, fileName, espID, deliveryKey, encryptionPassword s
     }
 
     return nil
+}
+
+// Gossip
+// uploadFile handles file uploads to the server
+func uploadFile(c *gin.Context) {
+    file, header, err := c.Request.FormFile("file")
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to get file"})
+        return
+    }
+    defer file.Close()
+
+    espID := c.PostForm("esp_id")
+    deliveryKey := c.PostForm("delivery_key")
+    encryptionPassword := c.PostForm("encryption_password")
+
+    filePath := "./uploads/" + header.Filename
+    out, err := os.Create(filePath)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create file"})
+        return
+    }
+    defer out.Close()
+
+    _, err = io.Copy(out, file)
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
+        return
+    }
+
+    fileMetadata := FileMetadata{
+        FileName:           header.Filename,
+        OriginalFileName:   header.Filename,
+        FilePath:           filePath,
+        EspID:              espID,
+        DeliveryKey:        deliveryKey,
+        EncryptionPassword: encryptionPassword,
+    }
+    db.Create(&fileMetadata)
+
+    c.JSON(http.StatusOK, gin.H{"status": "file uploaded"})
+}
+func authenticate(c *gin.Context) {
+    var login struct {
+        Username string `json:"username" binding:"required"`
+        Password string `json:"password" binding:"required"`
+    }
+
+    if err := c.ShouldBindJSON(&login); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+        return
+    }
+
+    var user User
+    if err := db.Where("username = ?", login.Username).First(&user).Error; err != nil {
+        c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid username or password"})
+        return
+    }
+
+    if !user.CheckPassword(login.Password) {
+        c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid username or password"})
+        return
+    }
+
+    session := sessions.Default(c)
+    session.Set("user_id", user.ID)
+    session.Save()
+
+    c.JSON(http.StatusOK, gin.H{"status": "authenticated"})
+}       
+
+func receiveGossip(c *gin.Context) {
+    var payload GossipPayload
+    if err := c.BindJSON(&payload); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid payload"})
+        return
+    }
+
+    // Merge remote commands
+    for _, remoteCommand := range payload.Commands {
+        var localCommand Command
+        if err := db.Where("id = ?", remoteCommand.ID).First(&localCommand).Error; err != nil {
+            if err == gorm.ErrRecordNotFound {
+                db.Create(&remoteCommand)
+            } else {
+                log.Printf("Failed to check existing command: %v", err)
+            }
+        } else {
+            if remoteCommand.UpdatedAt.After(localCommand.UpdatedAt) {
+                db.Save(&remoteCommand)
+            }
+        }
+    }
+
+    // Merge remote devices
+    for _, remoteDevice := range payload.ESPDevices {
+        var localDevice ESPDevice
+        if err := db.Where("esp_id = ?", remoteDevice.EspID).First(&localDevice).Error; err != nil {
+            if err == gorm.ErrRecordNotFound {
+                db.Create(&remoteDevice)
+            } else {
+                log.Printf("Failed to check existing device: %v", err)
+            }
+        } else {
+            if remoteDevice.UpdatedAt.After(localDevice.UpdatedAt) {
+                db.Save(&remoteDevice)
+            }
+        }
+    }
+
+    // Merge remote users
+    for _, remoteUser := range payload.Users {
+        var localUser User
+        if err := db.Where("id = ?", remoteUser.ID).First(&localUser).Error; err != nil {
+            if err == gorm.ErrRecordNotFound {
+                db.Create(&remoteUser)
+            } else {
+                log.Printf("Failed to check existing user: %v", err)
+            }
+        } else {
+            if remoteUser.UpdatedAt.After(localUser.UpdatedAt) {
+                db.Save(&remoteUser)
+            }
+        }
+    }
+
+    c.JSON(http.StatusOK, gin.H{"status": "success"})
 }
