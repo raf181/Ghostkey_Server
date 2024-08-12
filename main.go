@@ -48,7 +48,6 @@ func main() {
 	// Start gossip protocol
 	go startGossip()
 
-	if err := r.Run(":5001"); err != nil {
 		log.Fatalf("Failed to run server: %v", err)
 	}
 }
