@@ -1,4 +1,4 @@
-### Updated Documentation
+![Ghostkey](https://github.com/raf181/Ghostkey/blob/main/wiki/source/Untitled.webp)
 
 # Ghostkey_Server
 
