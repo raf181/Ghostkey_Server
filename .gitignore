@@ -5,3 +5,4 @@ cookies.txt
 test/registered_boards.json
 database.db-journal
 cargo_files/*
+/.vscode

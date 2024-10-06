@@ -14,6 +14,17 @@ export SECRET_KEY=your_secret_key
 go run main.go models.go routes.go
 ```
 
+you might get these error 
+```sh
+go run main.go models.go routes.go
+
+2024/10/06 01:54:14 /home/anoam/github/Ghostkey_Server/main.go:27
+[error] failed to initialize database, got error Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub
+2024/10/06 01:54:14 Failed to connect to database: Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub
+exit status 1
+```
+to fix it run these `sudo apt install build-essential`
+
 ## Routes
 
 ### 1. Register User
