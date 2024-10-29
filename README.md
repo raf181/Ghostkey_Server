@@ -109,3 +109,9 @@ register mailer
 ```sh
 curl -X POST http://192.168.10.62:5000/register_mailer -H "Content-Type: application/x-www-form-urlencoded" -d "esp_id=your_esp_id_here" -d "delivery_key=your_delivery_key_here" -d "encryption_password=YourEncryptionPassword"
 ```
+## Docker
+
+Run the server using Docker:
+```sh
+docker-compose up --build
+`
