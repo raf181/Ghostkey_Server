@@ -1,4 +1,4 @@
-### Updated Documentation
+![Ghostkey](https://github.com/raf181/Ghostkey/blob/main/wiki/source/Untitled.webp)
 
 # Ghostkey_Server
 
@@ -13,6 +13,17 @@ C2 server for the Ghostkey project.
 export SECRET_KEY=your_secret_key
 go run main.go models.go routes.go
 ```
+
+you might get these error 
+```sh
+go run main.go models.go routes.go
+
+2024/10/06 01:54:14 /home/anoam/github/Ghostkey_Server/main.go:27
+[error] failed to initialize database, got error Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub
+2024/10/06 01:54:14 Failed to connect to database: Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub
+exit status 1
+```
+to fix it run these `sudo apt install build-essential`
 
 ## Routes
 
@@ -98,3 +109,9 @@ register mailer
 ```sh
 curl -X POST http://192.168.10.62:5000/register_mailer -H "Content-Type: application/x-www-form-urlencoded" -d "esp_id=your_esp_id_here" -d "delivery_key=your_delivery_key_here" -d "encryption_password=YourEncryptionPassword"
 ```
+## Docker
+
+Run the server using Docker:
+```sh
+docker-compose up --build
+`

@@ -1,0 +1,13 @@
+# version: '3.8'
+
+services:
+  app:
+    build: .
+    image: golang:1.22-alpine
+    ports:
+      - "5000:5000"
+    environment:
+      - SECRET_KEY=${SECRET_KEY}
+    volumes:
+      - ./data:/app/data
+      - ./cargo_files:/app/cargo_files 

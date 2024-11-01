@@ -1,7 +1,8 @@
-instance/
-__pycache__/
+.env
+data/
+cargo_files/
 *.db
 cookies.txt
 test/registered_boards.json
 database.db-journal
-cargo_files/*
+/.vscode
