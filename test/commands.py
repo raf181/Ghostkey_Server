@@ -64,7 +64,7 @@ def retrieve_command_with_secret_key(esp_id, esp_secret_key):
 def main():
     boards = read_registered_boards('registered_boards.json')
     cookies_file = 'cookies.txt'
-    requests_per_minute = 100  # Adjust as per your requirement
+    requests_per_minute = 60  # Adjust as per your requirement
     seconds_per_request = 60 / requests_per_minute
     
     while True:

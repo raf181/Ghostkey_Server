@@ -6,3 +6,5 @@ cookies.txt
 test/registered_boards.json
 database.db-journal
 /.vscode
+/test
+data.db-journal

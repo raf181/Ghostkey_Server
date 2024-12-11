@@ -1,0 +1,4 @@
+{
+    "server_interface": ":5000",
+    "gossip_nodes": []
+}

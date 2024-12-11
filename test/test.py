@@ -1,73 +1,82 @@
 import requests
-import json
-import time
+import threading
+import random
+import string
 
-# Common configuration
-ssid = "CASA-PONVI"  # Replace with your WiFi network name (SSID)
-password = "Famili@_9once_Vivanco$"  # Replace with your WiFi password
-api_host = "192.168.10.62"  # Replace with your API host address
-api_port = 5000  # Replace with your API port
-api_endpoint = "/get_command"  # Replace with your API endpoint for fetching commands
+# Configurable server URL and registration endpoints
+SERVER_URL = "http://localhost:5000"
+REGISTER_USER_URL = f"{SERVER_URL}/register_user"
+REGISTER_DEVICE_URL = f"{SERVER_URL}/register_device"
 
-# Interval in seconds (e.g., 30 seconds)
-api_check_interval = 30
+# Credentials for registration
+SECRET_KEY = "your_secret_key"  # Replace with the actual server-side secret key
 
-def send_command_over_i2c(command):
-    # Implementation of sending command over I2C should be here
-    print(f"Sending command over I2C: {command}")
-    # Example: i2c.write(command)
-    pass
+# User and device counts
+USER_COUNT = 1000
+DEVICE_COUNT = 1000
 
-# Function to fetch command from API for a specific board
-def fetch_command_from_api(esp_id, esp_secret_key):
-    url = f"http://{api_host}:{api_port}{api_endpoint}"
-    params = {
-        "esp_id": esp_id,
-        "esp_secret_key": esp_secret_key
+# Generate random usernames and passwords
+def random_string(length=8):
+    return ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(length))
+
+# Register a user
+def register_user(user_id):
+    username = f"user_{user_id}"
+    password = random_string(10)
+    data = {
+        "username": username,
+        "password": password,
+        "secret_key": SECRET_KEY
     }
-    try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()
+    response = requests.post(REGISTER_USER_URL, data=data)
+    if response.status_code == 200:
+        print(f"Registered user: {username}")
+    else:
+        print(f"Failed to register user {username}: {response.status_code}")
 
-        # Check if response contains JSON data
-        if response.headers.get('content-type') == 'application/json':
-            command_data = response.json()
-            command = command_data.get("command", "").strip()
-            if command:
-                print(f"Fetched command from API for {esp_id}: {command}")
-                send_command_over_i2c(command)
-            else:
-                print(f"No command received from API for {esp_id}")
-        else:
-            print(f"Unexpected response content for {esp_id}: {response.content}")
+# Register a device for a specific user
+def register_device(device_id):
+    esp_id = f"esp_{device_id}"
+    esp_secret_key = random_string(16)
+    data = {
+        "esp_id": esp_id,
+        "esp_secret_key": esp_secret_key,
+    }
+    response = requests.post(REGISTER_DEVICE_URL, data=data)
+    if response.status_code == 200:
+        print(f"Registered device: {esp_id}")
+    else:
+        print(f"Failed to register device {esp_id}: {response.status_code}")
 
-    except requests.RequestException as e:
-        print(f"Failed to connect to API for {esp_id}: {e}")
+# Run user registrations in parallel
+def batch_register_users():
+    threads = []
+    for user_id in range(1, USER_COUNT + 1):
+        t = threading.Thread(target=register_user, args=(user_id,))
+        threads.append(t)
+        t.start()
+        if user_id % 1000 == 0:  # Limit simultaneous threads
+            for thread in threads:
+                thread.join()
+            threads = []
 
-    except json.JSONDecodeError as e:
-        print(f"Failed to decode JSON response for {esp_id}: {e}")
-
-    except Exception as e:
-        print(f"Error for {esp_id}: {e}")
-
-# Main function to load board credentials and fetch commands
-def main():
-    try:
-        # Load board credentials from registered_boards.json
-        with open('registered_boards.json', 'r') as f:
-            boards = json.load(f)
-
-        # Continuously fetch commands for all boards
-        while True:
-            for board in boards:
-                fetch_command_from_api(board['esp_id'], board['esp_secret_key'])
-            time.sleep(api_check_interval)
-
-    except FileNotFoundError:
-        print("Error: registered_boards.json not found. Make sure to run the registration script first.")
-
-    except json.JSONDecodeError as e:
-        print(f"Error decoding JSON from registered_boards.json: {e}")
+# Run device registrations in parallel
+def batch_register_devices():
+    threads = []
+    for device_id in range(1, DEVICE_COUNT + 1):
+        t = threading.Thread(target=register_device, args=(device_id,))
+        threads.append(t)
+        t.start()
+        if device_id % 1000 == 0:  # Limit simultaneous threads
+            for thread in threads:
+                thread.join()
+            threads = []
 
 if __name__ == "__main__":
-    main()
+    print("Starting user registration...")
+    batch_register_users()
+    print("User registration completed.")
+
+    print("Starting device registration...")
+    batch_register_devices()
+    print("Device registration completed.")
