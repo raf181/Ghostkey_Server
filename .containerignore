@@ -1,0 +1,42 @@
+# Exclude example files that have conflicting main functions
+cluster_examples.go
+
+# Exclude secrets and environment files
+.secrets
+.env
+
+# Exclude documentation files
+*.md
+README.md
+CLUSTER.md
+SOLUTION.md
+cluster_examples.md
+
+# Exclude development files
+.git
+.gitignore
+
+# Exclude build scripts
+*.sh
+*.bat
+
+# Exclude docker-compose files (we're using Podman)
+docker-compose*.yml
+
+# Exclude test files
+test/
+
+# Exclude temporary files
+*.tmp
+*.swp
+*.swo
+*~
+
+# Exclude IDE files
+.vscode/
+.idea/
+*.iml
+
+# Exclude OS files
+.DS_Store
+Thumbs.db

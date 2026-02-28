@@ -14,6 +14,10 @@ C2 server for the Ghostkey project.
 1. Set the environment variable:
     - `SECRET_KEY` as an environment variable or in your deployment environment.
 
+```ps1
+$env:SECRET_KEY='test_secret_key'; go run .
+```
+
 ```sh
 export SECRET_KEY=your_secret_key
 go run main.go models.go routes.go
@@ -39,11 +43,7 @@ to fix it run these `sudo apt install build-essential`
 To register a new user, ensure you provide the `SECRET_KEY` along with the username and password.
 
 ```sh
-curl --location 'http://localhost:5000/register_user' \
---header 'Content-Type: application/x-www-form-urlencoded' \
---data-urlencode 'username=new_user' \
---data-urlencode 'password=password123' \
---data-urlencode 'secret_key=your_secret_key'
+curl --location 'http://localhost:5000/register_user' --header 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'username=new_user' --data-urlencode 'password=password123' --data-urlencode 'secret_key=your_secret_key'
 ```
 
 ### 2. Login
@@ -129,6 +129,16 @@ Run the server using Docker:
 
 ```sh
 docker-compose up --build
+```
+
+## Cluster Mode
+
+The server supports real-time synchronization between multiple instances, allowing for horizontal scaling and high availability. For details, see [CLUSTER.md](CLUSTER.md).
+
+To run the server in cluster mode:
+
+```sh
+docker-compose -f docker-compose.cluster.yml up --build
 ```
 
 # Collaboration

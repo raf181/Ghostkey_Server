@@ -1,5 +1,7 @@
 .env
+.secrets
 data/
+backups/
 cargo_files/
 *.db
 cookies.txt
@@ -8,3 +10,7 @@ database.db-journal
 /.vscode
 /test
 data.db-journal
+GhostkeyClient/__pycache__/
+*.exe
+test.creds
+ghostkey-server

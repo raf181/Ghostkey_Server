@@ -1,0 +1,80 @@
+version: '3.8'
+
+services:
+  ghostkey-server:
+    container_name: ghostkey-server
+    build:
+      context: .
+      dockerfile: Containerfile
+    
+    # Security configurations
+    security_opt:
+      - no-new-privileges:true
+    
+    # Use unprivileged user
+    user: "65532:65532"
+    
+    # Read-only root filesystem for security
+    read_only: true
+    
+    # Minimal capabilities
+    cap_drop:
+      - ALL
+    
+    # Temporary filesystems for writable areas
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=100m
+      - /var/tmp:rw,noexec,nosuid,size=50m
+    
+    # Port mapping
+    ports:
+      - "5000:5000"
+    
+    # Environment variables
+    environment:
+      - SECRET_KEY=${SECRET_KEY:-default-secret-key-change-in-production}
+      - GIN_MODE=release
+    
+    # Volume mounts for persistent data
+    volumes:
+      - ghostkey_data:/app/data:rw
+      - ./config.json:/app/config.json:ro
+    
+    # Resource limits for security and performance
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.25'
+    
+    # Health check - commented out until health endpoint is implemented
+    # healthcheck:
+    #   test: ["CMD", "/usr/local/bin/ghostkey-server", "--health-check"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 40s
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Network configuration
+    networks:
+      - ghostkey-network
+
+# Define volumes
+volumes:
+  ghostkey_data:
+    driver: local
+
+# Secure network
+networks:
+  ghostkey-network:
+    driver: bridge
+    internal: false
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

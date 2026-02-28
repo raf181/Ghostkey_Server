@@ -1,4 +1,6 @@
 {
     "server_interface": ":5000",
-    "gossip_nodes": []
+    "gossip_nodes": [],
+    "node_id": "node-1",
+    "cluster_enabled": false
 }

@@ -4,9 +4,12 @@ package main
 // Import necessary packages
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -23,31 +26,52 @@ import (
 
 // Constants for file delivery status and retry settings
 const (
-	StatusPending   = "pending"
-	StatusCompleted = "completed"
-	StatusFailed    = "failed"
-	MaxRetryAttempts = 5
-	RetryInterval   = 1 * time.Minute
+	StatusPending    = "pending"       // Indicates a file is pending delivery
+	StatusCompleted  = "completed"     // Indicates a file was delivered successfully
+	StatusFailed     = "failed"        // Indicates a file delivery has failed
+	MaxRetryAttempts = 5               // Maximum number of retry attempts for delivery
+	RetryInterval    = 1 * time.Minute // Time interval between retry attempts
 )
 
 // authRequired checks for either session cookie or Basic Auth
 func authRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// First check for session authentication
 		session := sessions.Default(c)
 		userID := session.Get("user_id")
-		if userID != nil {
+		authenticated := session.Get("authenticated")
+
+		if userID != nil && authenticated != nil {
 			c.Set("user_id", userID)
 			c.Next()
 			return
 		}
 
-		// If no session, check for Basic Auth
+		// If no valid session, check for Basic Auth
 		username, password, hasAuth := c.Request.BasicAuth()
 		if hasAuth {
-			// Sanitize input
-			username = sanitizeInput(username)
-			
+			// Rate limiting check
+			clientIP := c.ClientIP()
+			if isRateLimited(clientIP, 10, time.Minute) {
+				c.JSON(http.StatusTooManyRequests, gin.H{"error": "Rate limit exceeded"})
+				c.Abort()
+				return
+			}
+
+			// Sanitize and validate input
+			username = sanitizeUsername(username)
+			if !validateInput(username) || !validateLength(username, 1, 50) {
+				log.Printf("Security Warning: Invalid username format from IP %s: %s", clientIP, username)
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input format"})
+				c.Abort()
+				return
+			}
+
+			if !validateLength(password, 1, 100) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid password length"})
+				c.Abort()
+				return
+			}
+
 			// Verify credentials
 			var user User
 			if err := db.Where("username = ?", username).First(&user).Error; err != nil {
@@ -74,44 +98,180 @@ func authRequired() gin.HandlerFunc {
 	}
 }
 
+// healthCheck responds with server status
+func healthCheck(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "healthy",
+		"time":    time.Now().UTC().Format(time.RFC3339),
+		"service": "Ghostkey_Server",
+	})
+}
+
+// securityHeaders middleware adds security headers to all responses
+func securityHeaders() gin.HandlerFunc {
+	return gin.HandlerFunc(func(c *gin.Context) {
+		// Prevent XSS attacks
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Header("X-XSS-Protection", "1; mode=block")
+		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
+
+		// Content Security Policy
+		c.Header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; font-src 'self'; object-src 'none'; media-src 'self'; form-action 'self'; base-uri 'self';")
+
+		// Remove server information
+		c.Header("Server", "")
+
+		c.Next()
+	})
+}
+
+// requestSizeLimit middleware limits request body size
+func requestSizeLimit(maxSize int64) gin.HandlerFunc {
+	return gin.HandlerFunc(func(c *gin.Context) {
+		if c.Request.ContentLength > maxSize {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "Request too large"})
+			c.Abort()
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxSize)
+		c.Next()
+	})
+}
+
 // registerRoutes sets up all the API endpoints for the server
 func registerRoutes(r *gin.Engine) {
+	// Add security middleware
+	r.Use(securityHeaders())
+	r.Use(requestSizeLimit(10 * 1024 * 1024)) // 10MB limit
+
+	// Health check endpoint (no authentication required)
+	r.GET("/", healthCheck) // Root path for basic connectivity check
+	r.GET("/health", healthCheck)
+
 	// Public routes (no authentication required)
 	r.POST("/register_user", registerUser)
 	r.POST("/login", login)
 	r.GET("/get_command", getCommand)
 	r.POST("/cargo_delivery", cargoDelivery)
+	r.GET("/ws", handleWebSocket)              // WebSocket endpoint for real-time sync
+	r.POST("/gossip", receiveGossip)           // Gossip endpoint for sync between nodes
+	r.GET("/cluster/status", getClusterStatus) // Get cluster status
 
-	// Protected routes (authentication required)
+	// Authenticated routes (require valid session)
 	authenticated := r.Group("/")
 	authenticated.Use(authRequired())
 	{
 		authenticated.POST("/logout", logout)
-
-		// Device routes
 		authenticated.POST("/register_device", registerDevice)
-		authenticated.DELETE("/remove_device", removeDevice)
-
-		// Command routes
-		authenticated.POST("/loaded_command", loadedCommand)
-		authenticated.GET("/get_loaded_command", getLoadedCommand)
-		authenticated.POST("/command", command)
+		authenticated.POST("/command", addCommand)
 		authenticated.POST("/remove_command", removeCommand)
 		authenticated.GET("/get_all_commands", getAllCommands)
-
-		// Active boards route
 		authenticated.GET("/active_boards", getActiveBoards)
-
-		// CARGO routes
 		authenticated.POST("/register_mailer", registerMail)
+		authenticated.POST("/loaded_command", updateLoadedCommands)
+		authenticated.DELETE("/remove_device", removeDevice)
 	}
 }
 
 // sanitizeInput cleans the input string to prevent injection attacks
 func sanitizeInput(input string) string {
 	input = strings.TrimSpace(input) // Remove leading/trailing whitespace
+
+	// Limit input length to prevent buffer overflow attacks
+	if len(input) > 1000 {
+		input = input[:1000]
+	}
+
+	// Remove null bytes and control characters
+	input = strings.ReplaceAll(input, "\x00", "")
+	re := regexp.MustCompile(`[\x00-\x1f\x7f]`)
+	input = re.ReplaceAllString(input, "")
+
+	return input
+}
+
+// sanitizeAlphanumeric allows only alphanumeric characters, underscores, hyphens, and dots
+func sanitizeAlphanumeric(input string) string {
+	input = sanitizeInput(input)
+	re := regexp.MustCompile(`[^\w.-]`)
+	return re.ReplaceAllString(input, "")
+}
+
+// sanitizeUsername allows alphanumeric characters, underscores, hyphens, dots, and @ symbol
+func sanitizeUsername(input string) string {
+	input = sanitizeInput(input)
 	re := regexp.MustCompile(`[^\w@.-]`)
-	return re.ReplaceAllString(input, "") // Remove unwanted characters
+	return re.ReplaceAllString(input, "")
+}
+
+// validateInput checks for common SQL injection patterns
+func validateInput(input string) bool {
+	// Common SQL injection patterns
+	sqlPatterns := []string{
+		`(?i)(union\s+select)`,
+		`(?i)(select\s+.*\s+from)`,
+		`(?i)(drop\s+table)`,
+		`(?i)(delete\s+from)`,
+		`(?i)(insert\s+into)`,
+		`(?i)(update\s+.*\s+set)`,
+		`(?i)(exec\s*\()`,
+		`(?i)(script\s*>)`,
+		`(?i)(<\s*script)`,
+		`--`,
+		`;`,
+		`'.*'`,
+		`".*"`,
+		`\*`,
+		`%`,
+	}
+
+	for _, pattern := range sqlPatterns {
+		matched, _ := regexp.MatchString(pattern, input)
+		if matched {
+			log.Printf("Security Warning: Potential SQL injection detected: %s", input)
+			return false
+		}
+	}
+	return true
+}
+
+// validateLength validates input length constraints
+func validateLength(input string, minLen, maxLen int) bool {
+	length := len(input)
+	return length >= minLen && length <= maxLen
+}
+
+// Rate limiting map to track requests per IP
+var rateLimitMap = make(map[string][]time.Time)
+var rateLimitMutex sync.RWMutex
+
+// isRateLimited checks if an IP has exceeded rate limits
+func isRateLimited(ip string, maxRequests int, timeWindow time.Duration) bool {
+	rateLimitMutex.Lock()
+	defer rateLimitMutex.Unlock()
+
+	now := time.Now()
+
+	// Clean old entries
+	if requests, exists := rateLimitMap[ip]; exists {
+		var validRequests []time.Time
+		for _, reqTime := range requests {
+			if now.Sub(reqTime) <= timeWindow {
+				validRequests = append(validRequests, reqTime)
+			}
+		}
+		rateLimitMap[ip] = validRequests
+	}
+
+	// Check if rate limit is exceeded
+	if len(rateLimitMap[ip]) >= maxRequests {
+		return true
+	}
+
+	// Add current request
+	rateLimitMap[ip] = append(rateLimitMap[ip], now)
+	return false
 }
 
 // loadedCommand replaces existing commands for an ESP device with a new list
@@ -188,11 +348,22 @@ func getLoadedCommand(c *gin.Context) {
 
 // registerUser handles the registration of a new user
 func registerUser(c *gin.Context) {
+	// Rate limiting check
+	clientIP := c.ClientIP()
+	if isRateLimited(clientIP, 5, time.Minute) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"message": "Rate limit exceeded"})
+		return
+	}
+
 	secretKey := c.PostForm("secret_key")
 	expectedSecretKey := os.Getenv("SECRET_KEY") // Expected secret key from environment variables
+	if expectedSecretKey == "" {
+		expectedSecretKey = loadSecretFromFile()
+	}
 
 	// Validate secret key
 	if secretKey != expectedSecretKey {
+		log.Printf("Security Warning: Invalid secret key attempt from IP %s", clientIP)
 		c.JSON(http.StatusForbidden, gin.H{"message": "Invalid secret key"})
 		return
 	}
@@ -206,8 +377,18 @@ func registerUser(c *gin.Context) {
 		return
 	}
 
-	// Sanitize username only
-	username = sanitizeInput(username)
+	// Enhanced input validation
+	username = sanitizeUsername(username)
+	if !validateInput(username) || !validateLength(username, 3, 50) {
+		log.Printf("Security Warning: Invalid username format from IP %s: %s", clientIP, username)
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid username format"})
+		return
+	}
+
+	if !validateLength(password, 8, 100) {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Password must be between 8 and 100 characters"})
+		return
+	}
 
 	// Check if username already exists
 	var user User
@@ -222,18 +403,27 @@ func registerUser(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to set password"})
 		return
 	}
-
 	// Save user to database
 	if err := db.Create(&newUser).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to register user"})
 		return
 	}
 
+	// Publish the user change to the cluster
+	publishUserChange(newUser, "create")
+
 	c.JSON(http.StatusOK, gin.H{"message": "User registered successfully"})
 }
 
 // login handles user login
 func login(c *gin.Context) {
+	// Rate limiting check
+	clientIP := c.ClientIP()
+	if isRateLimited(clientIP, 10, time.Minute) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"message": "Rate limit exceeded"})
+		return
+	}
+
 	username := c.PostForm("username")
 	password := c.PostForm("password")
 
@@ -243,8 +433,18 @@ func login(c *gin.Context) {
 		return
 	}
 
-	// Sanitize username only
-	username = sanitizeInput(username)
+	// Enhanced input validation
+	username = sanitizeUsername(username)
+	if !validateInput(username) || !validateLength(username, 1, 50) {
+		log.Printf("Security Warning: Invalid username format from IP %s: %s", clientIP, username)
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid input format"})
+		return
+	}
+
+	if !validateLength(password, 1, 100) {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid password length"})
+		return
+	}
 
 	// Fetch user from database
 	var user User
@@ -259,10 +459,19 @@ func login(c *gin.Context) {
 		return
 	}
 
-	// Create session
+	// Create session with maximum age and path settings
 	session := sessions.Default(c)
+	session.Options(sessions.Options{
+		MaxAge:   3600 * 24, // 24 hours
+		Path:     "/",
+		HttpOnly: true,
+	})
 	session.Set("user_id", user.ID)
-	session.Save()
+	session.Set("authenticated", true) // Add explicit authentication flag
+	if err := session.Save(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to create session"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Logged in successfully"})
 }
@@ -278,6 +487,13 @@ func logout(c *gin.Context) {
 
 // registerDevice handles registration of a new ESP device
 func registerDevice(c *gin.Context) {
+	// Rate limiting check
+	clientIP := c.ClientIP()
+	if isRateLimited(clientIP, 20, time.Minute) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"message": "Rate limit exceeded"})
+		return
+	}
+
 	espID := c.PostForm("esp_id")
 	espSecretKey := c.PostForm("esp_secret_key")
 
@@ -287,9 +503,20 @@ func registerDevice(c *gin.Context) {
 		return
 	}
 
-	// Sanitize inputs
-	espID = sanitizeInput(espID)
-	espSecretKey = sanitizeInput(espSecretKey)
+	// Enhanced input validation
+	espID = sanitizeAlphanumeric(espID)
+	espSecretKey = sanitizeAlphanumeric(espSecretKey)
+
+	if !validateInput(espID) || !validateLength(espID, 3, 50) {
+		log.Printf("Security Warning: Invalid ESP ID format from IP %s: %s", clientIP, espID)
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid ESP ID format"})
+		return
+	}
+
+	if !validateInput(espSecretKey) || !validateLength(espSecretKey, 8, 100) {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid secret key format"})
+		return
+	}
 
 	// Check if device already exists
 	var device ESPDevice
@@ -297,7 +524,6 @@ func registerDevice(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "ESP ID already exists"})
 		return
 	}
-
 	// Create new device
 	newDevice := ESPDevice{EspID: espID, EspSecretKey: espSecretKey}
 	if err := db.Create(&newDevice).Error; err != nil {
@@ -305,13 +531,23 @@ func registerDevice(c *gin.Context) {
 		return
 	}
 
+	// Publish the device change to the cluster
+	publishDeviceChange(newDevice, "create")
+
 	c.JSON(http.StatusOK, gin.H{"message": "ESP32 registered successfully", "esp_id": espID})
 }
 
 // removeDevice handles removal of an ESP device
 func removeDevice(c *gin.Context) {
+	// Rate limiting check
+	clientIP := c.ClientIP()
+	if isRateLimited(clientIP, 10, time.Minute) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"message": "Rate limit exceeded"})
+		return
+	}
+
 	espID := c.Query("esp_id")
-	espSecretKey := c.Query("secret_key")
+	espSecretKey := c.Query("secret_key") // Changed from esp_secret_key to match test expectations
 
 	// Validate parameters
 	if espID == "" || espSecretKey == "" {
@@ -319,9 +555,20 @@ func removeDevice(c *gin.Context) {
 		return
 	}
 
-	// Sanitize inputs
-	espID = sanitizeInput(espID)
-	espSecretKey = sanitizeInput(espSecretKey)
+	// Enhanced input validation
+	espID = sanitizeAlphanumeric(espID)
+	espSecretKey = sanitizeAlphanumeric(espSecretKey)
+
+	if !validateInput(espID) || !validateLength(espID, 3, 50) {
+		log.Printf("Security Warning: Invalid ESP ID format from IP %s: %s", clientIP, espID)
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid ESP ID format"})
+		return
+	}
+
+	if !validateInput(espSecretKey) || !validateLength(espSecretKey, 8, 100) {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid secret key format"})
+		return
+	}
 
 	// Find device in database
 	var device ESPDevice
@@ -329,18 +576,27 @@ func removeDevice(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid ESP ID or secret key"})
 		return
 	}
-
 	// Delete the device
 	if err := db.Delete(&device).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to remove ESP32"})
 		return
 	}
 
+	// Publish the device deletion to the cluster
+	publishDeviceChange(device, "delete")
+
 	c.JSON(http.StatusOK, gin.H{"message": "ESP32 removed successfully"})
 }
 
 // command adds a new command for an ESP device
 func command(c *gin.Context) {
+	// Rate limiting check
+	clientIP := c.ClientIP()
+	if isRateLimited(clientIP, 30, time.Minute) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"message": "Rate limit exceeded"})
+		return
+	}
+
 	espID := c.PostForm("esp_id")
 	commandText := c.PostForm("command")
 
@@ -350,9 +606,21 @@ func command(c *gin.Context) {
 		return
 	}
 
-	// Sanitize inputs
-	espID = sanitizeInput(espID)
-	commandText = sanitizeInput(commandText)
+	// Enhanced input validation
+	espID = sanitizeAlphanumeric(espID)
+	commandText = sanitizeInput(commandText) // Allow more characters for commands
+
+	if !validateInput(espID) || !validateLength(espID, 3, 50) {
+		log.Printf("Security Warning: Invalid ESP ID format from IP %s: %s", clientIP, espID)
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid ESP ID format"})
+		return
+	}
+
+	if !validateInput(commandText) || !validateLength(commandText, 1, 500) {
+		log.Printf("Security Warning: Invalid command format from IP %s: %s", clientIP, commandText)
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid command format"})
+		return
+	}
 
 	// Check if device exists
 	var device ESPDevice
@@ -360,13 +628,15 @@ func command(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid ESP ID"})
 		return
 	}
-
 	// Create new command
 	newCommand := Command{EspID: espID, Command: commandText}
 	if err := db.Create(&newCommand).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to add command"})
 		return
 	}
+
+	// Publish the command change to the cluster
+	publishCommandChange(newCommand, "create")
 
 	c.JSON(http.StatusOK, gin.H{"message": "Command added successfully"})
 }
@@ -393,29 +663,62 @@ func getCommand(c *gin.Context) {
 		return
 	}
 
-	// Update last request time
+	// Update last request time - store current time
 	now := time.Now().UTC()
 	device.LastRequestTime = &now
 
-	// Retrieve the next command
+	// Update the database with a separate goroutine to avoid blocking the response
+	// This ensures the ESP gets a command quickly even if the database is locked
+	go func(deviceID uint, timestamp time.Time) {
+		// Retry logic for database updates with exponential backoff
+		maxRetries := 5
+		baseDelay := 10 * time.Millisecond
+
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			// Create a new DB session for each attempt to avoid transaction conflicts
+			updateErr := db.Exec("UPDATE esp_devices SET last_request_time = ? WHERE id = ?", timestamp, deviceID).Error
+
+			if updateErr == nil {
+				// Success - log and exit retry loop
+				log.Printf("Successfully updated LastRequestTime for device %s (ID: %d) after %d attempt(s)", espID, deviceID, attempt+1)
+				break
+			}
+
+			// If it's the last attempt, just log the failure
+			if attempt == maxRetries-1 {
+				log.Printf("Failed to update LastRequestTime for device %s after %d attempts: %v", espID, maxRetries, updateErr)
+				break
+			}
+
+			// Calculate backoff with jitter for next attempt
+			delay := baseDelay * time.Duration(1<<uint(attempt)) // Exponential backoff
+			jitter := time.Duration(rand.Int63n(int64(delay / 2)))
+			delay = delay + jitter
+
+			log.Printf("Database error updating device %s timestamp (attempt %d/%d): %v - retrying in %v",
+				espID, attempt+1, maxRetries, updateErr, delay)
+			time.Sleep(delay)
+		}
+	}(device.ID, now)
+
+	// Retrieve the next command - we do this after updating the last_request_time to ensure
+	// the timestamp is updated even if there's a problem retrieving or deleting the command
+	var commandErr error
 	var command Command
-	err := db.Where("esp_id = ?", espID).Order("id").First(&command).Error
-	if err != nil {
-		// If no command found, return a preset command
+	commandErr = db.Where("esp_id = ?", espID).Order("id").First(&command).Error
+
+	if commandErr != nil {
+		// If no command found, return a default "null" command
 		presetCommand := "null"
 		command = Command{EspID: espID, Command: presetCommand}
 	} else {
-		// Delete the retrieved command from the database
+		// A command was found - attempt to delete it from the database
+		// If deletion fails due to database locking, we'll still return the command
+		// but it might be retrieved again on the next poll
 		if err := db.Delete(&command).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to delete command"})
-			return
+			log.Printf("Warning: Failed to delete command for device %s: %v", espID, err)
+			// Continue processing - don't return an error to the client
 		}
-	}
-
-	// Save the updated LastRequestTime for the device
-	if err := db.Save(&device).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to update device"})
-		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"command": command.Command})
@@ -437,12 +740,14 @@ func removeCommand(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"message": "Command not found"})
 		return
 	}
-
 	// Delete the command
 	if err := db.Delete(&command).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to remove command"})
 		return
 	}
+
+	// Publish the command deletion to the cluster
+	publishCommandChange(command, "delete")
 
 	c.JSON(http.StatusOK, gin.H{"message": "Command removed successfully"})
 }
@@ -477,41 +782,55 @@ func getAllCommands(c *gin.Context) {
 func getActiveBoards(c *gin.Context) {
 	var devices []ESPDevice
 
-	// Get devices with a last request time within the last 2 minutes
-	XMinutesAgo := time.Now().UTC().Add(-2 * time.Minute)
-	if err := db.Where("last_request_time > ?", XMinutesAgo).Find(&devices).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to retrieve active boards"})
+	// Get devices with a last request time within the last 5 minutes (increased window for better visibility)
+	fiveMinutesAgo := time.Now().UTC().Add(-5 * time.Minute)
+
+	// Query to get all devices that have communicated recently
+	if err := db.Where("last_request_time > ?", fiveMinutesAgo).Find(&devices).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve active boards", "details": err.Error()})
 		return
 	}
 
-	// Build a list of active devices
-	activeBoards := make([]map[string]interface{}, len(devices))
-	for i, device := range devices {
-		// Check if LastRequestTime is not nil
+	// Debug information
+	log.Printf("Found %d active devices in the last 5 minutes", len(devices))
+
+	// Build a list of active devices with proper time handling
+	activeBoards := make([]map[string]interface{}, 0, len(devices))
+	for _, device := range devices {
+		// Only include devices with valid LastRequestTime
 		if device.LastRequestTime != nil {
-			durationSinceLastRequest := time.Since(*device.LastRequestTime)
-			activeBoards[i] = map[string]interface{}{
-				"esp_id":                device.EspID,
-				"last_request_duration": durationSinceLastRequest.String(),
+			// Calculate how long ago the device was active
+			now := time.Now().UTC()
+			lastRequestTime := device.LastRequestTime.UTC() // Ensure UTC comparison
+			durationSinceLastRequest := now.Sub(lastRequestTime)
+
+			// Format duration in a human-readable way
+			var durationStr string
+			if durationSinceLastRequest.Minutes() < 1 {
+				durationStr = fmt.Sprintf("%.0f seconds ago", durationSinceLastRequest.Seconds())
+			} else if durationSinceLastRequest.Hours() < 1 {
+				durationStr = fmt.Sprintf("%.1f minutes ago", durationSinceLastRequest.Minutes())
+			} else {
+				durationStr = fmt.Sprintf("%.1f hours ago", durationSinceLastRequest.Hours())
 			}
-		} else {
-			// Handle case where LastRequestTime is nil
-			activeBoards[i] = map[string]interface{}{
+			// Add to the list of active boards
+			boardInfo := map[string]interface{}{
 				"esp_id":                device.EspID,
-				"last_request_duration": "No commands since last request",
+				"last_request_time":     device.LastRequestTime.Format(time.RFC3339),
+				"last_request_duration": durationStr,
 			}
+			activeBoards = append(activeBoards, boardInfo)
+
+			log.Printf("Active device: %s, last active: %s", device.EspID, durationStr)
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"active_boards": activeBoards})
+	c.JSON(http.StatusOK, gin.H{"active_boards": activeBoards, "count": len(activeBoards)})
 }
 
 // CARGO
 // cargoDelivery handles file delivery to the server
-var (
-	idCounter = 1        // Counter for unique IDs
-	idMutex   sync.Mutex // Mutex to protect the counter
-)
+var idMutex sync.Mutex // Mutex to protect the counter
 
 func cargoDelivery(c *gin.Context) {
 	espID := c.PostForm("esp_id")
@@ -571,19 +890,21 @@ func cargoDelivery(c *gin.Context) {
 
 	// Update file metadata and save to database
 	fileMetadata := FileMetadata{
-		FileName:           fileName,
-		OriginalFileName:   header.Filename,
-		FilePath:           outputPath,
-		EspID:              espID,
-		DeliveryKey:        deliveryKey,
-		EncryptionPassword: encryptionPassword,
-		Status:            StatusPending,
-		RetryCount:        0,
+		FileName:         fileName,
+		OriginalFileName: header.Filename,
+		FilePath:         outputPath,
+		EspID:            espID,
+		DeliveryKey:      deliveryKey, EncryptionPassword: encryptionPassword,
+		Status:     StatusPending,
+		RetryCount: 0,
 	}
 	if err := db.Create(&fileMetadata).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file metadata", "details": err.Error()})
 		return
 	}
+
+	// Publish the file metadata to the cluster
+	publishFileChange(fileMetadata, "create")
 
 	// Try immediate delivery
 	err = sendFileToStorage(outputPath, header.Filename, espID, deliveryKey, encryptionPassword)
@@ -591,24 +912,58 @@ func cargoDelivery(c *gin.Context) {
 		// Log the error but don't delete the file - the background service will retry
 		log.Printf("Warning: Failed to deliver file to Storage server: %v. Will retry later.", err)
 		c.JSON(http.StatusOK, gin.H{
-			"message": "File received successfully, will attempt delivery to storage server",
+			"message": "received successfully",
 			"status":  StatusPending,
 		})
 		return
 	}
 
+	// Create a client to get the file ID from storage
+	client := &http.Client{}
+	resp, err := client.Get("http://localhost:6000/list_files")
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "received successfully",
+			"status":  StatusCompleted,
+		})
+		return
+	}
+	defer resp.Body.Close()
+
+	var filesResp struct {
+		Files []struct {
+			ID       uint   `json:"id"`
+			FileName string `json:"file_name"`
+		} `json:"files"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&filesResp); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "received successfully",
+			"status":  StatusCompleted,
+		})
+		return
+	}
+
+	// Find our file in the list - it should be the most recent one
+	var fileID uint
+	if len(filesResp.Files) > 0 {
+		fileID = filesResp.Files[len(filesResp.Files)-1].ID
+	} else {
+	}
+
 	// Success! Update status and delete local file
 	fileMetadata.Status = StatusCompleted
 	db.Save(&fileMetadata)
-	
+
 	err = os.Remove(outputPath)
 	if err != nil {
 		log.Printf("Warning: Failed to delete local file %s: %v", outputPath, err)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "File delivered successfully",
+		"message": "delivered successfully",
 		"status":  StatusCompleted,
+		"file_id": fileID,
 	})
 }
 
@@ -664,8 +1019,8 @@ func registerMail(c *gin.Context) {
 	// Sanitize inputs
 	espID = sanitizeInput(espID)
 	deliveryKey = sanitizeInput(deliveryKey)
-	encryptionPassword = sanitizeInput(encryptionPassword)
-
+	// Since we're not using encryptionPassword in this function, we can remove its sanitization
+	
 	// Check if device already exists
 	var device ESPDevice
 	if err := db.Where("esp_id = ?", espID).First(&device).Error; err == nil {
@@ -690,10 +1045,14 @@ func registerMail(c *gin.Context) {
 
 // sendFileToStorage sends the file to the Storage server
 func sendFileToStorage(filePath, fileName, espID, deliveryKey, encryptionPassword string) error {
+	// Setup context with timeout for the request
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	// Open the file to send
 	file, err := os.Open(filePath)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to open file: %v", err)
 	}
 	defer file.Close()
 
@@ -703,27 +1062,33 @@ func sendFileToStorage(filePath, fileName, espID, deliveryKey, encryptionPasswor
 	// Add file to the form
 	part, err := writer.CreateFormFile("file", fileName)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create form file: %v", err)
 	}
 	_, err = io.Copy(part, file)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to copy file content: %v", err)
 	}
 
 	// Add other form fields
-	_ = writer.WriteField("esp_id", espID)
-	_ = writer.WriteField("delivery_key", deliveryKey)
-	_ = writer.WriteField("encryption_password", encryptionPassword)
+	if err := writer.WriteField("esp_id", espID); err != nil {
+		return fmt.Errorf("failed to add esp_id field: %v", err)
+	}
+	if err := writer.WriteField("delivery_key", deliveryKey); err != nil {
+		return fmt.Errorf("failed to add delivery_key field: %v", err)
+	}
+	if err := writer.WriteField("encryption_password", encryptionPassword); err != nil {
+		return fmt.Errorf("failed to add encryption_password field: %v", err)
+	}
 
 	err = writer.Close()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to close multipart writer: %v", err)
 	}
 
 	// Create POST request to Storage server
-	req, err := http.NewRequest("POST", "http://localhost:6000/upload_file", body)
+	req, err := http.NewRequestWithContext(ctx, "POST", "http://localhost:6000/upload_file", body)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create request: %v", err)
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
@@ -731,21 +1096,23 @@ func sendFileToStorage(filePath, fileName, espID, deliveryKey, encryptionPasswor
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("request to storage server failed: %v", err)
 	}
 	defer resp.Body.Close()
 
 	// Read the response
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read response body: %v", err)
 	}
 
 	// Check for successful response
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to upload file to Storage server: %s", string(respBody))
+		return fmt.Errorf("failed to upload file to Storage server (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
+	// Log successful file transfer
+	log.Printf("File successfully sent to Storage server: %s", fileName)
 	return nil
 }
 
@@ -900,7 +1267,36 @@ func receiveGossip(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "success"})
+	c.JSON(http.StatusOK, gin.H{"status": "gossip received"})
+}
+
+// updateLoadedCommands updates the commands loaded on an ESP device
+func updateLoadedCommands(c *gin.Context) {
+	espID := c.PostForm("esp_id")
+	commandText := c.PostForm("command")
+	if espID == "" || commandText == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "ESP ID and command are required"})
+		return
+	}
+	command(c) // Reuse the command function
+}
+
+// addCommand is an alias for the command function to maintain API compatibility
+func addCommand(c *gin.Context) {
+	command(c)
+}
+
+// isStorageServerOnline checks if the storage server is responding
+func isStorageServerOnline() bool {
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+	resp, err := client.Get("http://localhost:6000/health")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 // startFileDeliveryService starts the background service that retries pending file deliveries
@@ -913,63 +1309,38 @@ func startFileDeliveryService() {
 	}()
 }
 
-// isStorageServerOnline checks if the storage server is responding
-func isStorageServerOnline() bool {
-	// Try a simple HEAD request to check if server is up
-	resp, err := http.Head("http://localhost:6000/health")
-	if err != nil {
-		log.Printf("Storage server appears to be offline: %v", err)
-		return false
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
-}
-
-// retryPendingFiles attempts to deliver any pending files to the storage server
+// retryPendingFiles attempts to deliver any pending files to storage
 func retryPendingFiles() {
-	// First check if storage server is online
-	if !isStorageServerOnline() {
-		log.Printf("Storage server is offline, skipping file delivery attempts")
-		return
-	}
-
+	// Find all pending files that haven't exceeded max retries
 	var pendingFiles []FileMetadata
-	
-	// Find all pending files
-	if err := db.Where("status = ?", StatusPending).Find(&pendingFiles).Error; err != nil {
-		log.Printf("Error fetching pending files: %v", err)
+	if err := db.Where("status = ? AND retry_count < ?", StatusPending, MaxRetryAttempts).Find(&pendingFiles).Error; err != nil {
+		log.Printf("Failed to fetch pending files: %v", err)
 		return
 	}
 
 	for _, file := range pendingFiles {
-		// Check if file still exists
-		if _, err := os.Stat(file.FilePath); os.IsNotExist(err) {
-			log.Printf("File %s no longer exists, marking as failed", file.FilePath)
-			file.Status = StatusFailed
-			db.Save(&file)
-			continue
-		}
-
-		// Attempt to send file
+		// Try to deliver the file
 		err := sendFileToStorage(file.FilePath, file.OriginalFileName, file.EspID, file.DeliveryKey, file.EncryptionPassword)
+
 		if err != nil {
-			log.Printf("Failed to deliver file %s: %v", file.FilePath, err)
-			// Don't increment retry count if server becomes unreachable
-			if isStorageServerOnline() {
-				file.RetryCount++
-				if file.RetryCount >= MaxRetryAttempts {
-					file.Status = StatusFailed
-					log.Printf("File %s failed to deliver after %d attempts", file.FilePath, MaxRetryAttempts)
-				}
-				db.Save(&file)
+			// Update retry count
+			file.RetryCount++
+			if file.RetryCount >= MaxRetryAttempts {
+				file.Status = StatusFailed
+				log.Printf("File delivery failed after %d attempts: %s", MaxRetryAttempts, file.FileName)
 			}
-			continue
+		} else {
+			// Delivery successful
+			file.Status = StatusCompleted
+			// Try to delete the local file
+			if err := os.Remove(file.FilePath); err != nil {
+				log.Printf("Warning: Failed to delete local file %s: %v", file.FilePath, err)
+			}
 		}
 
-		// Success! Delete the file and update the database
-		os.Remove(file.FilePath)
-		file.Status = StatusCompleted
-		db.Save(&file)
-		log.Printf("Successfully delivered pending file: %s", file.FilePath)
+		// Save the updated file status
+		if err := db.Save(&file).Error; err != nil {
+			log.Printf("Failed to update file status: %v", err)
+		}
 	}
 }

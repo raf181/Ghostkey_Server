@@ -2,12 +2,19 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"math/rand"
 	"net/http"
 	"os"
+	"os/signal"
+	"strings"
+	"syscall"
 	"time"
 
 	"gorm.io/driver/sqlite"
@@ -20,8 +27,10 @@ import (
 
 // Config struct to hold configuration values
 type Config struct {
-	ServerInterface string   `json:"server_interface"`
-	GossipNodes     []string `json:"gossip_nodes"`
+	ServerInterface string   `json:"server_interface"` // Server listening interface and port
+	GossipNodes     []string `json:"gossip_nodes"`     // List of other nodes for gossip protocol
+	NodeID          string   `json:"node_id"`          // Unique identifier for this node
+	ClusterEnabled  bool     `json:"cluster_enabled"`  // Whether to enable cluster mode
 }
 
 var (
@@ -29,9 +38,62 @@ var (
 	config Config
 )
 
+// loadSecretFromFile loads the SECRET_KEY from .secrets file
+func loadSecretFromFile() string {
+	file, err := os.Open(".secrets")
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "SECRET_KEY=") {
+			return strings.TrimPrefix(line, "SECRET_KEY=")
+		}
+	}
+	return ""
+}
+
+// backupDatabase creates a backup of the database
+func backupDatabase() {
+	backupDir := "./backups"
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		log.Printf("Failed to create backup directory: %v", err)
+		return
+	}
+
+	timestamp := time.Now().Format("2006-01-02_15-04-05")
+	backupFile := fmt.Sprintf("%s/data_%s.db", backupDir, timestamp)
+
+	// Copy the database file
+	input, err := os.Open("data.db")
+	if err != nil {
+		log.Printf("Failed to open database for backup: %v", err)
+		return
+	}
+	defer input.Close()
+
+	output, err := os.Create(backupFile)
+	if err != nil {
+		log.Printf("Failed to create backup file: %v", err)
+		return
+	}
+	defer output.Close()
+
+	_, err = io.Copy(output, input)
+	if err != nil {
+		log.Printf("Failed to copy database: %v", err)
+		return
+	}
+
+	log.Printf("Database backup created: %s", backupFile)
+}
+
 func main() {
 	var err error
-	// Load configuration file
+	// Load configuration from config.json file
 	configFile, err := os.Open("config.json")
 	if err != nil {
 		log.Fatalf("Failed to open config file: %v", err)
@@ -43,64 +105,158 @@ func main() {
 		log.Fatalf("Failed to parse config file: %v", err)
 	}
 
-	// Open a connection to the SQLite database
+	// Initialize the SQLite database connection
 	db, err = gorm.Open(sqlite.Open("data.db"), &gorm.Config{})
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
-	// Auto-migrate the database schema
+	// Configure database connection pool for better performance
+	sqlDB, err := db.DB()
+	if err != nil {
+		log.Fatalf("Failed to get database instance: %v", err)
+	}
+	sqlDB.SetMaxIdleConns(10)
+	sqlDB.SetMaxOpenConns(100)
+	sqlDB.SetConnMaxLifetime(time.Hour)
+
+	// Perform automatic schema migration
 	db.AutoMigrate(&User{}, &ESPDevice{}, &Command{}, &FileMetadata{}, &Counter{})
 
-	// Create a new Gin router
+	// Create a new Gin router for handling HTTP requests
+	// Set Gin mode based on environment
+	ginMode := os.Getenv("GIN_MODE")
+	if ginMode == "release" {
+		gin.SetMode(gin.ReleaseMode)
+	}
 	r := gin.Default()
 
-	// Get the secret key from the environment variables
+	// Add panic recovery middleware
+	r.Use(gin.Recovery())
+
+	// Retrieve secret key from environment variables for session store
 	secretKey := os.Getenv("SECRET_KEY")
 	if secretKey == "" {
-		log.Fatalf("SECRET_KEY environment variable is required")
+		// Try to load from secrets file
+		secretKey = loadSecretFromFile()
+		if secretKey == "" {
+			log.Fatalf("SECRET_KEY environment variable is required or .secrets file not found")
+		}
 	}
 
-	log.Printf("Using secret key: %s", secretKey)
+	log.Printf("Using secret key: [REDACTED - Length: %d characters]", len(secretKey))
 
-	// Set up session store with the secret key
+	// Set up session middleware using the secret key
 	store := cookie.NewStore([]byte(secretKey))
 	r.Use(sessions.Sessions("mysession", store))
 
-	// Register routes
+	// Register all the API routes
 	registerRoutes(r)
 
-	// Start gossip protocol in a separate goroutine
-	go startGossip()
+	// Start periodic database backup (every 6 hours)
+	go func() {
+		backupTicker := time.NewTicker(6 * time.Hour)
+		for range backupTicker.C {
+			backupDatabase()
+		}
+	}()
 
-	// Start the file delivery service
+	// Initialize the sync system if cluster mode is enabled
+	if config.ClusterEnabled {
+		if config.NodeID == "" {
+			// Generate a random node ID if not provided
+			config.NodeID = fmt.Sprintf("node-%d", time.Now().UnixNano())
+			log.Printf("No node ID provided, generated: %s", config.NodeID)
+		}
+
+		log.Printf("Cluster mode enabled, node ID: %s", config.NodeID)
+		initSync(config.NodeID)
+	} else {
+		// Start the gossip protocol in a separate goroutine (legacy mode)
+		go startGossip()
+	}
+
+	// Start the file delivery background service
+	log.Println("Starting file delivery service...")
 	startFileDeliveryService()
 
-	// Run the Gin server on the configured interface
-	if err := r.Run(config.ServerInterface); err != nil {
-		log.Fatalf("Failed to run server: %v", err)
+	// Run a check for storage server availability
+	go func() {
+		// Initial check
+		if isStorageServerOnline() {
+			log.Println("Storage server is online and responding to health checks")
+		} else {
+			log.Println("WARNING: Storage server (Ghostkey_Depo) is offline! File delivery will be queued until it's available.")
+			log.Println("Make sure Ghostkey_Depo is running on port 6000 or adjust the configuration.")
+		}
+
+		// Periodically check status
+		ticker := time.NewTicker(5 * time.Minute)
+		for range ticker.C {
+			if isStorageServerOnline() {
+				log.Println("Storage server connection status: Online")
+			} else {
+				log.Println("Storage server connection status: Offline")
+			}
+		}
+	}()
+
+	// Create HTTP server for graceful shutdown
+	srv := &http.Server{
+		Addr:    config.ServerInterface,
+		Handler: r,
+	}
+
+	// Start server in a goroutine
+	go func() {
+		log.Printf("Starting Ghostkey Server on %s", config.ServerInterface)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Failed to run server: %v", err)
+		}
+	}()
+
+	// Wait for interrupt signal to gracefully shut down the server
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Println("Shutting down server...")
+
+	// Create a final backup before shutdown
+	backupDatabase()
+
+	// Give the server 30 seconds to finish current requests
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("Server forced to shutdown: %v", err)
+	} else {
+		log.Println("Server shutdown complete")
 	}
 }
 
 // startGossip starts the gossip protocol at regular intervals
 func startGossip() {
+	// Create a ticker to trigger gossip at specified intervals
 	ticker := time.NewTicker(1 * time.Minute) // Adjust the interval as needed
 	for range ticker.C {
+		// Call the gossip function when the ticker ticks
 		gossip()
 	}
 }
 
 // gossip performs the gossip protocol
 func gossip() {
+	// Check if gossip nodes are configured
 	if len(config.GossipNodes) == 0 {
 		log.Println("No gossip nodes configured, skipping gossip process")
 		return
 	}
 
-	// Select a random node from the configured gossip nodes
+	// Select a random gossip node to communicate with
 	targetNode := config.GossipNodes[rand.Intn(len(config.GossipNodes))]
 	var localVersionVector VersionVector
-	
+
 	// Fetch the local version vector
 	db.Model(&Command{}).Pluck("updated_at", &localVersionVector)
 
@@ -124,15 +280,18 @@ func gossip() {
 		Users:         localUsers,
 	}
 
-	// Marshal the payload to JSON
+	// Marshal the payload to JSON and send it to the target node
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		log.Printf("Failed to marshal gossip payload: %v", err)
 		return
 	}
 
-	// Send the payload to the target node
-	resp, err := http.Post(targetNode+"/gossip", "application/json", bytes.NewReader(payloadBytes))
+	// Send the payload to the target node with timeout
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	resp, err := client.Post(targetNode+"/gossip", "application/json", bytes.NewReader(payloadBytes))
 	if err != nil {
 		log.Printf("Failed to gossip with %s: %v", targetNode, err)
 		return
